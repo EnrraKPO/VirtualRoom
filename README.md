@@ -27,7 +27,7 @@ presence and whether an `immersive-vr` session is supported.
 |---|---|
 | Room size | W / D / H in metres. "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. |
 | Screens per surface | Starting grid (cols × rows) for walls and for floor/ceiling. Optional bezels. **Apply layout** rebuilds everything and resets per-wall grids and room scale. |
-| Videos | **Choose folder…** scans a folder (File System Access API, handle persisted in IndexedDB, one click to re-grant on next launch). **Shuffle** redeals. Or pick files, or the sample video. "Start each video at a random point", "Auto-jump every N s", "Separate decoder per screen" (stress test for non-library mode), "Mute all". |
+| Videos | **Add folder…** adds a folder to the library (File System Access API); each folder row has a **subfolders** checkbox (on by default) and an × to remove it. **Add files…** adds one or more individual videos as a row. Rows persist across launches in IndexedDB; after a restart a row says "click to reopen" until you click it to re-grant read access. **Shuffle** redeals from the combined pool; **Clear** removes every row. "Use sample video" shows the sample until the next shuffle or layout change. Also: "Start each video at a random point", "Auto-jump every N s", "Separate decoder per screen" (stress test for non-library mode), "Mute all". |
 | Stats | render fps, decoder count, audible count, dropped video frames %, stalled/paused. |
 
 ## Controls
@@ -81,7 +81,12 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   `MeshBasicMaterial`. Copies share the element (and so the decoder). All start muted;
   audio is enabled per element. `setTileSource()` disposes old material/texture only if no
   other tile still uses it.
-- **Library**: `library[]` of file handles; object URLs created lazily in `urlFor()`.
+- **Library**: `roots[]` is the list of sources (`kind` 'dir' or 'files', handle(s), `sub` flag,
+  `granted`, `entries`). `scanRoot()` walks a root (recursively if `sub`), `rebuildLibrary()`
+  flattens granted roots into `library[]`. Each entry's `key` is `<rootId>:<relative path>`, used
+  as `tile.label` so same-named files in different folders stay distinct; `tileName()` gives the
+  filename for display. Object URLs are created lazily in `urlFor()` and survive rescans.
+  `persistRoots()` stores handles in IndexedDB; the legacy single `folder` key is migrated.
 - **Focus**: `floatGroup` (unit plane scaled to size) animates from the tile's world pose to
   a pose in front of the head. `floatTile` is a pseudo-tile with `isFloat` + `origin`, so all
   per-tile actions work on it. Size = `focusSize(dist, aspect)`, distance = `focusDistance()`.

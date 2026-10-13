@@ -139,11 +139,11 @@ async function changeGrid(key, dCols, dRows) {
   // Fill the new tiles
   if (library.length) {
     const inUse = new Set(tiles.map(t => t.label));
-    let deck = shuffled(library.filter(e => !inUse.has(e.name)));
+    let deck = shuffled(library.filter(e => !inUse.has(e.key)));
     for (const t of made) {
       if (!deck.length) deck = shuffled(library);
       const e = deck.pop();
-      setTileSource(t, await urlFor(e), e.name);
+      setTileSource(t, await urlFor(e), e.key);
     }
   } else if (sources.length) {
     made.forEach((t, i) => { const src = sources[i % sources.length]; setTileSource(t, src.src, src.label); });
@@ -216,9 +216,13 @@ function applySources() {
             (names.length > 8 ? names.slice(0, 8).join(', ') + ', …' : names.join(', ')));
 }
 
-// ---- Folder library (File System Access API, handle persisted in IndexedDB) ----
+// ---- Library: folders (optionally with subfolders) and individual files ----
+// Handles are persisted in IndexedDB; Chrome re-grants read access with one click on next launch.
 const VIDEO_EXT = /\.(mp4|m4v|webm|mkv|mov|ogv)$/i;
-let library = [];          // [{ handle, name, url? }]
+let roots = [];            // [{ id, kind:'dir'|'files', handle?, handles?, name, sub, granted, entries }]
+let library = [];          // flattened entries of granted roots: [{ handle, key, name, url? }]
+let rootSeq = 0;
+const tileName = label => (label || '').replace(/^\d+:/, '').split('/').pop();
 
 function idb() {
   return new Promise((res, rej) => {
@@ -229,22 +233,85 @@ function idb() {
 }
 async function kvSet(k, v) { const db = await idb(); const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').put(v, k); return new Promise(r => tx.oncomplete = r); }
 async function kvGet(k) { const db = await idb(); return new Promise(r => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => r(q.result); q.onerror = () => r(undefined); }); }
+async function kvDel(k) { const db = await idb(); const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').delete(k); return new Promise(r => tx.oncomplete = r); }
 
-async function scanFolder(dir) {
-  for (const e of library) if (e.url) URL.revokeObjectURL(e.url);
-  library = [];
-  for await (const [name, h] of dir.entries()) if (h.kind === 'file' && VIDEO_EXT.test(name)) library.push({ handle: h, name });
-  library.sort((a, b) => a.name.localeCompare(b.name));
-  $('libInfo').textContent = `${library.length} videos in "${dir.name}"`;
+async function scanDir(dir, sub, prefix, out) {
+  for await (const [name, h] of dir.entries()) {
+    if (h.kind === 'file') { if (VIDEO_EXT.test(name)) out.push({ handle: h, name, rel: prefix + name }); }
+    else if (sub && h.kind === 'directory') await scanDir(h, sub, prefix + name + '/', out);
+  }
+}
+async function scanRoot(r) {
+  const out = [];
+  try {
+    if (r.kind === 'dir') await scanDir(r.handle, r.sub, '', out);
+    else for (const h of r.handles) if (VIDEO_EXT.test(h.name)) out.push({ handle: h, name: h.name, rel: h.name });
+  } catch (e) { setStatus(`Could not read "${r.name}": ${e.message}`); }
+  out.sort((a, b) => a.rel.localeCompare(b.rel));
+  // Keep object URLs of files that are still present (screens may be playing them); drop the rest.
+  const prev = new Map(r.entries.map(e => [e.rel, e]));
+  for (const e of out) { e.key = `${r.id}:${e.rel}`; const o = prev.get(e.rel); if (o?.url) { e.url = o.url; prev.delete(e.rel); } }
+  for (const o of prev.values()) if (o.url) URL.revokeObjectURL(o.url);
+  r.entries = out;
+}
+function rebuildLibrary() {
+  library = roots.filter(r => r.granted).flatMap(r => r.entries);
+  renderRoots();
+}
+function renderRoots() {
+  const box = $('roots'); box.innerHTML = '';
+  const pending = roots.filter(r => !r.granted);
+  for (const r of roots) {
+    const row = document.createElement('div'); row.className = 'root';
+    const icon = r.kind === 'dir' ? '📁' : '🎞';
+    const info = r.granted ? `${r.entries.length} video${r.entries.length === 1 ? '' : 's'}` : 'click to reopen';
+    row.innerHTML = `<span class="rname" title="${r.name}">${icon} ${r.name}</span><span class="rinfo">${info}</span>` +
+      (r.kind === 'dir' ? `<label><input type="checkbox" class="rsub" ${r.sub ? 'checked' : ''}/> subfolders</label>` : '') +
+      `<button class="rdel" title="Remove">×</button>`;
+    if (!r.granted) { row.querySelector('.rinfo').style.cursor = 'pointer'; row.querySelector('.rinfo').onclick = regrant; }
+    const sub = row.querySelector('.rsub');
+    if (sub) sub.onchange = async () => { r.sub = sub.checked; await persistRoots(); await scanRoot(r); rebuildLibrary(); await refill(); };
+    row.querySelector('.rdel').onclick = () => removeRoot(r);
+    box.appendChild(row);
+  }
+  const n = library.length;
+  $('libInfo').textContent = roots.length ? `${n} video${n === 1 ? '' : 's'} from ${roots.length} source${roots.length === 1 ? '' : 's'}` +
+    (pending.length ? ` (${pending.length} to reopen)` : '') : '';
+}
+async function persistRoots() {
+  await kvSet('roots', roots.map(r => ({ kind: r.kind, handle: r.handle, handles: r.handles, name: r.name, sub: r.sub })));
 }
 async function urlFor(entry) {
-  if (!entry.url) entry.url = URL.createObjectURL(await entry.handle.getFile());
+  if (!entry.url) {
+    const f = entry.handle.getFile ? await entry.handle.getFile() : entry.handle;
+    entry.url = URL.createObjectURL(f);
+  }
   return entry.url;
 }
-async function openFolder(dir) {
-  await scanFolder(dir);
-  if (!library.length) { setStatus('No video files found in that folder.'); return; }
+async function addRoot(r) {
+  r.id = ++rootSeq; r.granted = true; r.entries = [];
+  await scanRoot(r);
+  if (!r.entries.length) { setStatus(`No video files found in "${r.name}".`); return; }
+  roots.push(r);
+  await persistRoots();
+  rebuildLibrary();
   await dealRandom();
+}
+async function removeRoot(r) {
+  roots = roots.filter(x => x !== r);
+  await persistRoots();
+  rebuildLibrary();
+  const prefix = `${r.id}:`;
+  if (!library.length) { disposeVideos(); setStatus('Library is empty.'); }
+  else for (const t of tiles) if (t.label.startsWith(prefix)) await swapTile(t);
+  for (const e of r.entries) if (e.url) URL.revokeObjectURL(e.url);
+}
+// After a rescan: screens whose video vanished get a new one; empty screens get filled.
+async function refill() {
+  const keys = new Set(library.map(e => e.key));
+  if (!library.length) { disposeVideos(); return; }
+  for (const t of tiles) if (!t.label || !keys.has(t.label)) await swapTile(t);
+  setStatus(`${tiles.length} screens, ${videoEls.length} decoder(s) from ${library.length} library videos.`);
 }
 function shuffled(arr) {
   const a = arr.slice();
@@ -258,7 +325,7 @@ async function dealRandom() {
   for (const t of tiles) {
     if (!deck.length) deck = shuffled(library);
     const e = deck.pop();
-    setTileSource(t, await urlFor(e), e.name);
+    setTileSource(t, await urlFor(e), e.key);
   }
   setStatus(`${tiles.length} screens, ${videoEls.length} decoder(s) from ${library.length} library videos.`);
 }
@@ -266,45 +333,73 @@ async function dealRandom() {
 async function swapTile(tile) {
   if (!library.length) { setStatus('Swap needs a folder library.'); return; }
   const inUse = new Set(tiles.map(t => t.label));
-  let pool = library.filter(e => e.name !== tile.label && !inUse.has(e.name));
-  if (!pool.length) pool = library.filter(e => e.name !== tile.label);
+  let pool = library.filter(e => e.key !== tile.label && !inUse.has(e.key));
+  if (!pool.length) pool = library.filter(e => e.key !== tile.label);
   if (!pool.length) return;
   const e = pool[Math.floor(Math.random() * pool.length)];
-  setTileSource(tile, await urlFor(e), e.name);
+  setTileSource(tile, await urlFor(e), e.key);
 }
 
 $('pickFolder').addEventListener('click', async () => {
   if (!window.showDirectoryPicker) { setStatus('Folder picking needs Chrome or Edge.'); return; }
   try {
     const dir = await showDirectoryPicker({ mode: 'read' });
-    await kvSet('folder', dir);
-    await openFolder(dir);
+    await addRoot({ kind: 'dir', handle: dir, name: dir.name, sub: true });
   } catch (e) { if (e.name !== 'AbortError') setStatus('Folder error: ' + e.message); }
 });
+$('pickFiles').addEventListener('click', async () => {
+  if (!window.showOpenFilePicker) { $('files').click(); return; }
+  try {
+    const handles = await showOpenFilePicker({ multiple: true, types: [{ description: 'Videos', accept: { 'video/*': ['.mp4', '.m4v', '.webm', '.mkv', '.mov', '.ogv'] } }] });
+    if (!handles.length) return;
+    await addRoot({ kind: 'files', handles, name: handles.length === 1 ? handles[0].name : `${handles.length} files`, sub: false });
+  } catch (e) { if (e.name !== 'AbortError') setStatus('File error: ' + e.message); }
+});
+$('files').addEventListener('change', async e => {   // fallback when showOpenFilePicker is missing
+  const fs = [...e.target.files]; e.target.value = ''; if (!fs.length) return;
+  await addRoot({ kind: 'files', handles: fs, name: fs.length === 1 ? fs[0].name : `${fs.length} files`, sub: false });
+});
 $('shuffle').addEventListener('click', dealRandom);
+
+// Re-grant read permission for every root that lost it (needs a click; Chrome may need one click per root).
+async function regrant() {
+  for (const r of roots.filter(x => !x.granted)) {
+    const hs = r.kind === 'dir' ? [r.handle] : r.handles;
+    let ok = true;
+    for (const h of hs) if (h.requestPermission && await h.requestPermission({ mode: 'read' }) !== 'granted') { ok = false; break; }
+    if (!ok) { renderRoots(); return; }
+    r.granted = true; await scanRoot(r);
+  }
+  rebuildLibrary();
+  if (library.length) await (tiles.some(t => t.label) ? refill() : dealRandom());
+}
+async function hasPermission(r) {
+  const hs = r.kind === 'dir' ? [r.handle] : r.handles;
+  for (const h of hs) if (h.queryPermission && await h.queryPermission({ mode: 'read' }) !== 'granted') return false;
+  return true;
+}
 (async () => {
-  const dir = await kvGet('folder');
-  if (!dir) return;
-  const perm = await dir.queryPermission({ mode: 'read' });
-  if (perm === 'granted') { await openFolder(dir); return; }
-  $('libInfo').textContent = `Click to reopen "${dir.name}"`;
-  $('libInfo').style.cursor = 'pointer';
-  $('libInfo').onclick = async () => {
-    if (await dir.requestPermission({ mode: 'read' }) === 'granted') { $('libInfo').onclick = null; await openFolder(dir); }
-  };
+  let saved = await kvGet('roots');
+  const legacy = await kvGet('folder');          // single-folder format from before multi-root support
+  if (!saved && legacy) { saved = [{ kind: 'dir', handle: legacy, name: legacy.name, sub: true }]; await kvSet('roots', saved); await kvDel('folder'); }
+  if (!saved || !saved.length) return;
+  for (const s of saved) {
+    const r = { ...s, id: ++rootSeq, granted: false, entries: [] };
+    if (await hasPermission(r)) { r.granted = true; await scanRoot(r); }
+    roots.push(r);
+  }
+  rebuildLibrary();
+  if (library.length) await dealRandom();
 })();
 
 // ---- Other UI ----
-function clearLibrary() { for (const e of library) if (e.url) URL.revokeObjectURL(e.url); library = []; $('libInfo').textContent = ''; }
+async function clearLibrary() {
+  for (const e of library) if (e.url) URL.revokeObjectURL(e.url);
+  roots = []; library = []; await persistRoots(); renderRoots();
+}
 $('apply').addEventListener('click', buildLayout);
-$('files').addEventListener('change', e => {
-  const fs = [...e.target.files]; if (!fs.length) return;
-  clearLibrary();
-  sources = fs.map(f => ({ src: URL.createObjectURL(f), label: f.name }));
-  applySources();
-});
-$('useSample').addEventListener('click', () => { clearLibrary(); sources = [{ src: SAMPLE, label: 'Sample' }]; applySources(); });
-$('clear').addEventListener('click', () => { clearLibrary(); sources = []; disposeVideos(); setStatus('Cleared.'); });
+$('useSample').addEventListener('click', () => { sources = [{ src: SAMPLE, label: 'Sample' }]; applySources(); });
+$('clear').addEventListener('click', async () => { await clearLibrary(); sources = []; disposeVideos(); setStatus('Cleared.'); });
 $('separate').addEventListener('change', () => { if (!library.length) applySources(); });
 $('mute').addEventListener('change', e => { if (e.target.checked) for (const v of videoEls) v.muted = true; });
 
@@ -568,7 +663,7 @@ function drawStrip(tile) {
   c.fillStyle = '#333'; c.fillRect(24, 14, Wc - 48, 10);
   c.fillStyle = '#4aa8ff'; c.fillRect(24, 14, (Wc - 48) * prog, 10);
   c.font = '34px system-ui, sans-serif'; c.textBaseline = 'middle'; c.fillStyle = '#fff';
-  let name = tile.label || '(empty)';
+  let name = tileName(tile.label) || '(empty)';
   while (c.measureText(name).width > Wc - BTN_AREA - 440 && name.length > 4) name = name.slice(0, -2);
   c.fillText(name, 24, 60);
   const R = Wc - BTN_AREA;   // right edge of the info area
@@ -829,7 +924,7 @@ addEventListener('keydown', e => {
   if (e.code === 'KeyF') toggleFocus(mouseTile);
   if (e.code === 'KeyR') jumpRandom(mouseTile);
   if ((e.code === 'KeyX' || e.code === 'KeyC') && mouseTile) {
-    if (!marked) { marked = mouseTile; setStatus(`Marked "${mouseTile.label}". Hover another screen and press X to swap or C to copy.`); }
+    if (!marked) { marked = mouseTile; setStatus(`Marked "${tileName(mouseTile.label)}". Hover another screen and press X to swap or C to copy.`); }
     else {
       if (e.code === 'KeyX') swapPlaces(marked, mouseTile); else copyTo(marked, mouseTile);
       marked = null; setStatus(e.code === 'KeyX' ? 'Swapped.' : 'Copied.');

@@ -14,6 +14,18 @@
     #ui input[type=number] { width: 3.5em; }
     #ui button { padding: 4px 10px; margin: 3px 3px 3px 0; cursor: pointer; }
     .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    #roots { margin: 4px 0; }
+    .root { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+    .root .rname { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .root .rinfo { opacity: .7; }
+    .root label { display: inline; margin: 0; }
+    .root .rdel { padding: 0 7px; margin: 0; }
+    #roots { margin: 4px 0; }
+    .root { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
+    .root .rname { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .root .rinfo { opacity: .7; }
+    .root label { display: inline; margin: 0; }
+    .root .rdel { padding: 0 7px; margin: 0; }
     #status, #diag, #stats { margin-top: 6px; opacity: .85; font-size: 12px; white-space: pre-line; }
     #stats { font-family: ui-monospace, monospace; }
   </style>
@@ -55,15 +67,16 @@
     <fieldset>
       <legend>Videos</legend>
       <div class="row">
-        <button id="pickFolder">Choose folder…</button>
+        <button id="pickFolder">Add folder…</button>
+        <button id="pickFiles">Add files…</button>
         <button id="shuffle">Shuffle</button>
-        <span id="libInfo"></span>
+        <button id="clear">Clear</button>
       </div>
-      <label>Or pick files
-        <input type="file" id="files" accept="video/*" multiple /></label>
+      <input type="file" id="files" accept="video/*" multiple hidden />
+      <div id="roots"></div>
+      <div id="libInfo"></div>
       <div class="row">
         <button id="useSample">Use sample video</button>
-        <button id="clear">Clear</button>
       </div>
       <label><input type="checkbox" id="randomStart" checked /> Start each video at a random point</label>
       <label>Auto-jump to a random point every <input type="number" id="autoJump" min="0" max="3600" step="5" value="0" /> s (0 = off)</label>

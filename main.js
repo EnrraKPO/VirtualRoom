@@ -235,8 +235,8 @@ function computeFit(tile, aspect) {
     regions.push({ poly: main.length >= 3 ? main : tile.poly, ...rect });
     if (mode === 'nested' && main.length >= 3) {
       const depth = Math.max(1, Math.min(4, +$('nestDepth').value || 2)), inc = Math.max(0, (+$('nestInc').value || 0) / 100);
-      const fallback = $('nestFallback').value;
-      for (const piece of leftoverPieces(tile.poly, rect)) nestFill(piece, rect, 1, { aspect, crop, inc, depth, fallback, minW: Math.max(NEST_MIN_W, NEST_MIN_FRAC * vw) }, regions, mirrors);
+      const fallback = $('nestFallback').value, flip = $('nestFlip').checked;
+      for (const piece of leftoverPieces(tile.poly, rect)) nestFill(piece, rect, 1, { aspect, crop, inc, depth, fallback, flip, minW: Math.max(NEST_MIN_W, NEST_MIN_FRAC * vw) }, regions, mirrors);
     }
   }
   return { regions, mirrors };
@@ -297,14 +297,17 @@ function leftoverPieces(poly, r) {
   const x0 = r.cx - r.vw / 2, x1 = r.cx + r.vw / 2, y0 = r.cy - r.vh / 2, y1 = r.cy + r.vh / 2;
   const band = clipHalf(clipHalf(poly, q => q[0] - x0), q => x1 - q[0]);
   const pieces = [clipHalf(poly, q => x0 - q[0]), clipHalf(poly, q => q[0] - x1), clipHalf(band, q => q[1] - y1), clipHalf(band, q => y0 - q[1])];
+  pieces.forEach((p, i) => p.side = i < 2 ? 'x' : 'y');   // beside the rectangle, or above/below it
   return pieces.filter(p => p.length >= 3 && polyArea(p) > 1e-6);
 }
 // Nested copies: fit a smaller copy of the video into a leftover piece (same rule as the face, more crop per level),
 // then recurse into that piece's own leftovers. Pieces too small or too slim get the fallback: mirrored continuation
 // of the enclosing video (with seam lines) or blank.
 const NEST_MIN_W = 0.12, NEST_MIN_FRAC = 0.2, NEST_MAX_SLIM = 4;   // min copy width (m, fraction of main), max piece bbox aspect
+// With o.flip, a copy beside its parent is mirrored horizontally and one above/below it vertically, relative to
+// the parent's own orientation, so each level flips again (region fx / fy).
 function nestFill(piece, parent, level, o, regions, mirrors) {
-  const fallback = () => { if (o.fallback === 'mirror') { const r = { poly: piece, cx: parent.cx, cy: parent.cy, vw: parent.vw, vh: parent.vh }; regions.push(r); mirrors.push(r); } };
+  const fallback = () => { if (o.fallback === 'mirror') { const r = { poly: piece, cx: parent.cx, cy: parent.cy, vw: parent.vw, vh: parent.vh, fx: parent.fx, fy: parent.fy }; regions.push(r); mirrors.push(r); } };
   if (level > o.depth) return fallback();
   const xs = piece.map(p => p[0]), ys = piece.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
@@ -318,7 +321,8 @@ function nestFill(piece, parent, level, o, regions, mirrors) {
   const vw = ins.w * zoom, vh = vw / o.aspect;
   if (vw < o.minW) return fallback();                                     // too small to read
   const t = coverRatio > 1 ? Math.max(0, Math.min(1, (zoom - 1) / (coverRatio - 1))) : 1;
-  const rect = { cx: ins.cx + (bx - ins.cx) * t, cy: ins.cy + (by - ins.cy) * t, vw, vh };
+  const rect = { cx: ins.cx + (bx - ins.cx) * t, cy: ins.cy + (by - ins.cy) * t, vw, vh, fx: !!parent.fx, fy: !!parent.fy };
+  if (o.flip) { if (piece.side === 'x') rect.fx = !rect.fx; else rect.fy = !rect.fy; }
   const main = clipToRect(piece, rect);
   if (main.length < 3) return fallback();
   regions.push({ poly: main, ...rect });
@@ -330,7 +334,11 @@ function regionsGeometry(regions) {
   for (const r of regions) {
     if (r.poly.length < 3) continue;
     const g = shapeGeometry(r.poly), p = g.attributes.position, ix = g.index, base = pos.length / 3;
-    for (let i = 0; i < p.count; i++) { pos.push(p.getX(i), p.getY(i), 0); uv.push((p.getX(i) - r.cx) / r.vw + 0.5, (p.getY(i) - r.cy) / r.vh + 0.5); }
+    for (let i = 0; i < p.count; i++) {
+      pos.push(p.getX(i), p.getY(i), 0);
+      const u = (p.getX(i) - r.cx) / r.vw + 0.5, v = (p.getY(i) - r.cy) / r.vh + 0.5;
+      uv.push(r.fx ? 1 - u : u, r.fy ? 1 - v : v);
+    }
     for (let i = 0; i < ix.count; i++) idx.push(base + ix.getX(i));
     g.dispose();
   }
@@ -1066,7 +1074,7 @@ function syncShapeFields() {
 $('shape').addEventListener('change', syncShapeFields);
 $('maxCrop').addEventListener('change', refitAll);
 $('fillMode').addEventListener('change', () => { syncNestFields(); refitAll(); });
-for (const id of ['nestDepth', 'nestInc', 'nestFallback']) $(id).addEventListener('change', refitAll);
+for (const id of ['nestDepth', 'nestInc', 'nestFallback', 'nestFlip']) $(id).addEventListener('change', refitAll);
 function syncNestFields() { $('nestRow').style.display = $('fillMode').value === 'nested' && $('cropRow').style.display !== 'none' ? '' : 'none'; }
 syncShapeFields();
 $('useSample').addEventListener('click', () => { sources = [{ src: SAMPLE, label: 'Sample' }]; applySources(); });

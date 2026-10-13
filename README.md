@@ -25,7 +25,7 @@ presence and whether an `immersive-vr` session is supported.
 
 | Section | What it does |
 |---|---|
-| Room size | W / D / H in metres. "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. |
+| Room | **Shape**: Box (W × D × H) or **Prism** with N walls (3–48), sized by the width across flats and H. A prism's walls get the normal wall grid; its N-gon floor and ceiling carry the largest square grid that fits, backed by a dark polygon. "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. |
 | Screens per surface | Starting grid (cols × rows) for walls and for floor/ceiling. Optional bezels. **Apply layout** rebuilds everything and resets per-wall grids and room scale. |
 | Videos | **Add folder…** adds a folder to the library (File System Access API); each folder row has a **subfolders** checkbox (on by default) and an × to remove it. **Add files…** adds one or more individual videos as a row. Rows persist across launches in IndexedDB; after a restart a row says "click to reopen" until you click it to re-grant read access. **Shuffle** redeals from the combined pool; **Clear** removes every row. "Use sample video" shows the sample until the next shuffle or layout change. Also: "Start each video at a random point", "Auto-jump every N s", "Separate decoder per screen" (stress test for non-library mode), "Mute all". |
 | Stats | render fps, decoder count, audible count, dropped video frames %, stalled/paused. |
@@ -74,6 +74,10 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
 
 ## How it works (for future changes)
 
+- **Shapes**: `shape` is `'box'` or `'prism'` (N walls). `surfaces()` returns the face list for the
+  current shape; prism walls are keyed `wall0..wallN-1`, floor/roof carry a `poly` descriptor for
+  the polygon backing. `wallPlanes()` gives the walls as outward normals + distances and drives
+  both `clampRig()` and `focusDistance()`, so new shapes only need those two functions updated.
 - **Tiles**: `tiles[]` of `{ mesh, w, h, video, label, highlight, surface }`. `grids[key]` holds
   cols/rows per surface; `buildSurface()` builds one surface, `changeGrid()` rebuilds one
   surface without touching the others.

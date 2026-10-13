@@ -5,8 +5,17 @@ const SAMPLE = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sampl
 
 // ---- Room dimensions (meters), read from the panel ----
 let W = 5, D = 5, H = 3;
+let shape = 'box', N = 4;   // 'box' or 'prism' with N walls; for a prism W is the width across flats and D = W
+
+// Walls as planes: outward unit normal (nx, nz) and distance from the room centre, unscaled.
+function wallPlanes() {
+  if (shape === 'box') return [{ nx: 0, nz: -1, dist: D / 2 }, { nx: 0, nz: 1, dist: D / 2 }, { nx: -1, nz: 0, dist: W / 2 }, { nx: 1, nz: 0, dist: W / 2 }];
+  const a = W / 2, out = [];
+  for (let i = 0; i < N; i++) { const phi = i * 2 * Math.PI / N; out.push({ nx: Math.sin(phi), nz: -Math.cos(phi), dist: a }); }
+  return out;
+}
 function surfaces() {
-  return [
+  if (shape === 'box') return [
     { key: 'front', kind: 'wall', size: [W, H], pos: [0, H / 2, -D / 2], rot: [0, 0, 0] },
     { key: 'back',  kind: 'wall', size: [W, H], pos: [0, H / 2,  D / 2], rot: [0, Math.PI, 0] },
     { key: 'left',  kind: 'wall', size: [D, H], pos: [-W / 2, H / 2, 0], rot: [0, Math.PI / 2, 0] },
@@ -14,6 +23,19 @@ function surfaces() {
     { key: 'floor', kind: 'flat', size: [W, D], pos: [0, 0, 0],          rot: [-Math.PI / 2, 0, 0] },
     { key: 'roof',  kind: 'flat', size: [W, D], pos: [0, H, 0],          rot: [ Math.PI / 2, 0, 0] },
   ];
+  // Prism: N walls in a ring (apothem a), N-gon floor and roof carrying the largest inscribed square grid.
+  const a = W / 2, R = a / Math.cos(Math.PI / N), ww = 2 * a * Math.tan(Math.PI / N);
+  const out = [];
+  let k = 0;
+  for (let i = 0; i < N; i++) {
+    const phi = i * 2 * Math.PI / N;
+    k = Math.max(k, Math.abs(Math.cos(phi)) + Math.abs(Math.sin(phi)));
+    out.push({ key: 'wall' + i, kind: 'wall', size: [ww, H], pos: [a * Math.sin(phi), H / 2, -a * Math.cos(phi)], rot: [0, -phi, 0] });
+  }
+  const sq = 2 * a / k;
+  out.push({ key: 'floor', kind: 'flat', size: [sq, sq], pos: [0, 0, 0], rot: [-Math.PI / 2, 0, 0], poly: { R, N, start: Math.PI / 2 + Math.PI / N } });
+  out.push({ key: 'roof',  kind: 'flat', size: [sq, sq], pos: [0, H, 0], rot: [ Math.PI / 2, 0, 0], poly: { R, N, start: -Math.PI / 2 + Math.PI / N } });
+  return out;
 }
 
 // Interaction tuning
@@ -65,7 +87,11 @@ function buildSurface(s) {
   g.position.set(...s.pos); g.rotation.set(...s.rot);
   roomGroup.add(g);
   surfaceGroups[s.key] = g;
-  if (bezel) {
+  if (s.poly) {   // polygon face: always backed so the corners outside the grid look closed
+    const back = new THREE.Mesh(new THREE.CircleGeometry(s.poly.R, s.poly.N, s.poly.start), bezelMat);
+    back.position.z = -0.006;
+    g.add(back);
+  } else if (bezel) {
     const back = new THREE.Mesh(new THREE.PlaneGeometry(...s.size), bezelMat);
     back.position.z = -0.006;
     g.add(back);
@@ -96,7 +122,8 @@ function buildLayout() {
   mouseTile = null;
   roomGroup.clear();
   tiles = []; tileOf.clear();
-  W = +$('roomW').value || 5; D = +$('roomD').value || 5; H = +$('roomH').value || 3;
+  shape = $('shape').value; N = Math.max(3, Math.min(48, +$('prismN').value || 6));
+  W = +$('roomW').value || 5; D = shape === 'prism' ? W : (+$('roomD').value || 5); H = +$('roomH').value || 3;
   roomScale = 1; roomGroup.scale.setScalar(1); roomGroup.position.set(0, 0, 0);
   for (const s of surfaces()) {
     grids[s.key] = {
@@ -109,7 +136,9 @@ function buildLayout() {
   if (library.length) dealRandom(); else applySources();
 }
 function updateTileCount() {
-  $('tileCount').textContent = `${tiles.length} screens · room ${(W * roomScale).toFixed(1)} × ${(D * roomScale).toFixed(1)} × ${(H * roomScale).toFixed(1)} m`;
+  const dims = shape === 'prism' ? `${N} walls, ${(W * roomScale).toFixed(1)} m across × ${(H * roomScale).toFixed(1)} m high`
+                                 : `${(W * roomScale).toFixed(1)} × ${(D * roomScale).toFixed(1)} × ${(H * roomScale).toFixed(1)} m`;
+  $('tileCount').textContent = `${tiles.length} screens · ${dims}`;
 }
 
 // Change the grid of ONE surface; other surfaces keep their videos.
@@ -417,6 +446,14 @@ async function clearLibrary() {
   roots = []; library = []; await persistRoots(); renderRoots();
 }
 $('apply').addEventListener('click', buildLayout);
+function syncShapeFields() {
+  const prism = $('shape').value === 'prism';
+  $('prismFields').style.display = prism ? '' : 'none';
+  $('dField').style.display = prism ? 'none' : '';
+  $('wLabel').textContent = prism ? 'Across' : 'W';
+}
+$('shape').addEventListener('change', syncShapeFields);
+syncShapeFields();
 $('useSample').addEventListener('click', () => { sources = [{ src: SAMPLE, label: 'Sample' }]; applySources(); });
 $('clear').addEventListener('click', async () => { await clearLibrary(); sources = []; disposeVideos(); setStatus('Cleared.'); });
 $('separate').addEventListener('change', () => { if (!library.length) applySources(); });
@@ -568,12 +605,13 @@ function focusTarget() {
 // How far in front of the viewer the focus screen sits: 2.5 m, or 85% of the way to the wall if closer.
 function focusDistance(eye, fwd) {
   const ox = roomGroup.position.x, oz = roomGroup.position.z;
-  const hx = W * roomScale / 2, hz = D * roomScale / 2;
   let toWall = Infinity;
-  if (fwd.x > 1e-4) toWall = Math.min(toWall, (ox + hx - eye.x) / fwd.x);
-  if (fwd.x < -1e-4) toWall = Math.min(toWall, (ox - hx - eye.x) / fwd.x);
-  if (fwd.z > 1e-4) toWall = Math.min(toWall, (oz + hz - eye.z) / fwd.z);
-  if (fwd.z < -1e-4) toWall = Math.min(toWall, (oz - hz - eye.z) / fwd.z);
+  for (const p of wallPlanes()) {
+    const along = fwd.x * p.nx + fwd.z * p.nz;
+    if (along <= 1e-4) continue;
+    const d = p.dist * roomScale - ((eye.x - ox) * p.nx + (eye.z - oz) * p.nz);
+    toWall = Math.min(toWall, d / along);
+  }
   return Math.max(0.6, Math.min(2.5, toWall * 0.85));
 }
 // Size so the screen fills the chosen horizontal field of view at that distance,
@@ -869,9 +907,13 @@ function recentre() {
 function clampRig() {
   const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
   cam.getWorldPosition(_head);
-  const m = 0.25, hx = W * roomScale / 2 - m, hz = D * roomScale / 2 - m;
-  const ox = roomGroup.position.x, oz = roomGroup.position.z;
-  const cx = Math.max(ox - hx, Math.min(ox + hx, _head.x)), cz = Math.max(oz - hz, Math.min(oz + hz, _head.z));
+  const m = 0.25, ox = roomGroup.position.x, oz = roomGroup.position.z;
+  let cx = _head.x, cz = _head.z;
+  for (let pass = 0; pass < 2; pass++) for (const p of wallPlanes()) {   // two passes settle corners
+    const lim = p.dist * roomScale - m;
+    const d = (cx - ox) * p.nx + (cz - oz) * p.nz;
+    if (d > lim) { cx -= (d - lim) * p.nx; cz -= (d - lim) * p.nz; }
+  }
   rig.position.x += cx - _head.x;
   rig.position.z += cz - _head.z;
   // Vertical: never below your real standing height, never through the ceiling

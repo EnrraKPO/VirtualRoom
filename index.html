@@ -20,12 +20,6 @@
     .root .rinfo { opacity: .7; }
     .root label { display: inline; margin: 0; }
     .root .rdel { padding: 0 7px; margin: 0; }
-    #roots { margin: 4px 0; }
-    .root { display: flex; gap: 8px; align-items: center; padding: 2px 0; }
-    .root .rname { max-width: 180px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .root .rinfo { opacity: .7; }
-    .root label { display: inline; margin: 0; }
-    .root .rdel { padding: 0 7px; margin: 0; }
     #status, #diag, #stats { margin-top: 6px; opacity: .85; font-size: 12px; white-space: pre-line; }
     #stats { font-family: ui-monospace, monospace; }
   </style>
@@ -35,11 +29,19 @@
     <h1>Video Room</h1>
 
     <fieldset>
-      <legend>Room size (m)</legend>
+      <legend>Room</legend>
       <div class="row">
-        W <input type="number" id="roomW" min="2" max="30" step="0.5" value="5" />
-        D <input type="number" id="roomD" min="2" max="30" step="0.5" value="5" />
+        Shape <select id="shape">
+          <option value="box">Box</option>
+          <option value="prism">Prism (N walls)</option>
+        </select>
+        <span id="prismFields">Walls <input type="number" id="prismN" min="3" max="48" step="1" value="6" /></span>
+      </div>
+      <div class="row">
+        <span id="wLabel">W</span> <input type="number" id="roomW" min="2" max="30" step="0.5" value="5" />
+        <span id="dField">D <input type="number" id="roomD" min="2" max="30" step="0.5" value="5" /></span>
         H <input type="number" id="roomH" min="2" max="15" step="0.5" value="3" />
+        <span>m</span>
       </div>
       <div class="row">
         Focus screen fills <input type="number" id="focusFov" min="20" max="140" step="5" value="80" />° of view

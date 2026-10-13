@@ -6,7 +6,7 @@ const SAMPLE = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sampl
 // ---- Room dimensions (meters), read from the panel ----
 let W = 5, D = 5, H = 3;
 let shape = 'box', N = 4;   // 'box', 'prism' (N walls) or a polyhedron; for non-box shapes W is the width across flats and D = W
-const POLY_SHAPES = { tetra: 1, octa: 1, dodeca: 1, icosa: 1, geo2: 1 };
+const POLY_SHAPES = { tetra: 1, octa: 1, dodeca: 1, icosa: 1, geo2: 1, trap: 1 };   // trap = N-trapezohedron, 2N kites
 const isPoly = () => !!POLY_SHAPES[shape];
 
 // Walls/faces as planes: outward unit normal and distance from the room centre, unscaled.
@@ -14,7 +14,7 @@ const isPoly = () => !!POLY_SHAPES[shape];
 let polyCentreY = 0;
 function wallPlanes() {
   if (shape === 'box') return [{ nx: 0, ny: 0, nz: -1, dist: D / 2 }, { nx: 0, ny: 0, nz: 1, dist: D / 2 }, { nx: -1, ny: 0, nz: 0, dist: W / 2 }, { nx: 1, ny: 0, nz: 0, dist: W / 2 }];
-  if (isPoly()) return polyhedron(shape, W).faces.filter(f => f.n.y > -0.99).map(f => ({ nx: f.n.x, ny: f.n.y, nz: f.n.z, dist: f.dist }));
+  if (isPoly()) return polyhedron(shape, W, N).faces.filter(f => f.n.y > -0.99).map(f => ({ nx: f.n.x, ny: f.n.y, nz: f.n.z, dist: f.dist }));
   const a = W / 2, out = [];
   for (let i = 0; i < N; i++) { const phi = i * 2 * Math.PI / N; out.push({ nx: Math.sin(phi), ny: 0, nz: -Math.cos(phi), dist: a }); }
   return out;
@@ -30,7 +30,7 @@ function surfaces() {
   ];
   if (isPoly()) {
     // Every face is one surface; its tiles are the face polygon split into level² triangles.
-    return polyhedron(shape, W).faces.map((f, i) => ({ key: 'face' + i, kind: 'face', pts: f.pts, pos: [f.c.x, f.c.y, f.c.z], quat: f.quat }));
+    return polyhedron(shape, W, N).faces.map((f, i) => ({ key: 'face' + i, kind: 'face', pts: f.pts, pos: [f.c.x, f.c.y, f.c.z], quat: f.quat }));
   }
   // Prism: N walls in a ring (apothem a), N-gon floor and roof carrying the largest inscribed square grid.
   const a = W / 2, R = a / Math.cos(Math.PI / N), ww = 2 * a * Math.tan(Math.PI / N);
@@ -49,10 +49,19 @@ function surfaces() {
 
 // ---- Polyhedra: regular solids standing on one face, floor at y = 0, "across" = twice the floor face's inradius ----
 const PHI = (1 + Math.sqrt(5)) / 2;
-function polyVertices(kind) {
+function polyVertices(kind, n) {
   const V = [];
   const add = (x, y, z) => V.push(new THREE.Vector3(x, y, z));
   const signs = [-1, 1];
+  if (kind === 'trap') {
+    // n-trapezohedron: two apexes and a zigzag ring of 2n vertices (radius 1, height ±z0). The apex height
+    // that makes each kite planar is h = z0 (1 + r) / (1 - r) with r = cos(π/n); z0 is chosen so every vertex
+    // lies on one sphere, which gives the roundest room.
+    const r = Math.cos(Math.PI / n), z0 = (1 - r) / (2 * Math.sqrt(r)), h = z0 * (1 + r) / (1 - r);
+    add(0, h, 0); add(0, -h, 0);
+    for (let k = 0; k < 2 * n; k++) { const th = k * Math.PI / n; add(Math.cos(th), k % 2 ? -z0 : z0, Math.sin(th)); }
+    return V;
+  }
   if (kind === 'tetra') { add(1, 1, 1); add(1, -1, -1); add(-1, 1, -1); add(-1, -1, 1); }
   else if (kind === 'octa') { for (const s of signs) { add(s, 0, 0); add(0, s, 0); add(0, 0, s); } }
   else if (kind === 'dodeca') {
@@ -89,10 +98,10 @@ function hullFaces(V) {
   return faces;
 }
 const polyCache = {};
-function polyhedron(kind, across) {
-  const ck = kind + ':' + across;
+function polyhedron(kind, across, n) {
+  const ck = kind + ':' + across + ':' + n;
   if (polyCache[ck]) return polyCache[ck];
-  let V = polyVertices(kind);
+  let V = polyVertices(kind, n);
   let faces = hullFaces(V);
   // Stand on face 0: rotate its outward normal to -y, then turn so one floor edge runs along x.
   const q = new THREE.Quaternion().setFromUnitVectors(faces[0].n.clone(), new THREE.Vector3(0, -1, 0));
@@ -276,10 +285,10 @@ function buildLayout() {
   mouseTile = null;
   roomGroup.clear();
   tiles = []; tileOf.clear();
-  shape = $('shape').value; N = Math.max(3, Math.min(48, +$('prismN').value || 6));
+  shape = $('shape').value; N = Math.max(3, Math.min(shape === 'trap' ? 16 : 48, +$('prismN').value || 6));
   W = +$('roomW').value || 5; D = shape === 'box' ? (+$('roomD').value || 5) : W; H = +$('roomH').value || 3;
   polyCentreY = 0;
-  if (isPoly()) { const ph = polyhedron(shape, W); H = ph.top; polyCentreY = ph.centre.y; $('roomH').value = H.toFixed(1); }
+  if (isPoly()) { const ph = polyhedron(shape, W, N); H = ph.top; polyCentreY = ph.centre.y; $('roomH').value = H.toFixed(1); }
   roomScale = 1; roomGroup.scale.setScalar(1); roomGroup.position.set(0, 0, 0);
   for (const s of surfaces()) {
     grids[s.key] = s.kind === 'face' ? { cols: Math.max(1, Math.min(4, +$('faceLevel').value || 1)), rows: 1, face: true } : {
@@ -606,8 +615,10 @@ async function clearLibrary() {
 }
 $('apply').addEventListener('click', buildLayout);
 function syncShapeFields() {
-  const v = $('shape').value, prism = v === 'prism', poly = !!POLY_SHAPES[v], box = v === 'box';
-  $('prismFields').style.display = prism ? '' : 'none';
+  const v = $('shape').value, prism = v === 'prism', poly = !!POLY_SHAPES[v], box = v === 'box', trap = v === 'trap';
+  $('prismFields').style.display = prism || trap ? '' : 'none';
+  $('trapHint').style.display = trap ? '' : 'none';
+  $('prismN').max = trap ? 16 : 48;
   $('dField').style.display = box ? '' : 'none';
   $('hField').style.display = poly ? 'none' : '';
   $('wLabel').textContent = box ? 'W' : 'Across';

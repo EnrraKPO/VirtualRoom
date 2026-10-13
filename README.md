@@ -25,7 +25,7 @@ presence and whether an `immersive-vr` session is supported.
 
 | Section | What it does |
 |---|---|
-| Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere) standing on one face, sized by the width across (twice the floor face's inradius; height follows). A prism's walls get the normal wall grid, its N-gon floor and ceiling carry the largest square grid that fits. A polyhedron's faces are each one screen showing the video centre-cropped to the face shape; "Split each face" (level 1–4) cuts triangles into L² screens and pentagons into a fan of 5 × (L−1)². "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. |
+| Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere, or an N-trapezohedron with 2N kite faces, N = 3–16, odd N for a flat ceiling) standing on one face, sized by the width across (twice the floor face's inradius; height follows). A prism's walls get the normal wall grid, its N-gon floor and ceiling carry the largest square grid that fits. A polyhedron's faces are each one screen showing the video centre-cropped to the face shape; "Split each face" (level 1–4) cuts triangles into L² screens and pentagons into a fan of 5 × (L−1)². "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. |
 | Screens per surface | Starting grid (cols × rows) for walls and for floor/ceiling. Optional bezels. **Apply layout** rebuilds everything and resets per-wall grids and room scale. |
 | Videos | **Add folder…** adds a folder to the library (File System Access API); each folder row has a **subfolders** checkbox (on by default) and an × to remove it. **Add files…** adds one or more individual videos as a row. Rows persist across launches in IndexedDB; after a restart a row says "click to reopen" until you click it to re-grant read access. **Shuffle** redeals from the combined pool; **Clear** removes every row. "Use sample video" shows the sample until the next shuffle or layout change. Also: "Start each video at a random point", "Auto-jump every N s", "Separate decoder per screen" (stress test for non-library mode), "Mute all". |
 | Stats | render fps, decoder count, audible count, dropped video frames %, stalled/paused. |
@@ -79,7 +79,8 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   `kind: 'face'`, a local 2D polygon `pts` and a `quat`. `wallPlanes()` gives walls/faces as outward
   normals + distances from the room centre `(0, polyCentreY, 0)` and drives both `clampRig()` (sloped
   faces push the head back horizontally) and `focusDistance()`.
-- **Polyhedra**: `polyhedron(kind, across)` builds vertices (`polyVertices`), takes the convex hull by
+- **Polyhedra**: `polyhedron(kind, across, n)` builds vertices (`polyVertices`; the trapezohedron is two apexes
+  plus a zigzag ring, apex height solved so kites are planar and all vertices share one sphere), takes the convex hull by
   brute force (`hullFaces`, fine for ≤ 42 vertices), rotates face 0 down to be the floor, scales so the
   floor's inradius is `across / 2`, and returns per-face centroid, quaternion (local z = inward normal,
   local y = up along the face) and counter-clockwise polygon. `splitPolygon()` subdivides; `buildFaceTiles()`

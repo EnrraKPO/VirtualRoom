@@ -59,7 +59,12 @@ the sound icon even when not pointed at.
 **Station board**: a small table that follows you at waist height, just below the straight-ahead
 view (look down to see it; faint until you look at it or point at it). Drag its ♥ "deploy" slot onto
 any screen to put a random liked video there. Tap its "shuffle" slot (trigger press and release on it)
-to redeal every screen except the pinned ones. Hold the trigger on "shuffle ♥" for 0.7 s (a red bar fills under it) to put a random liked
+to redeal every screen except the pinned ones. Tap its "settings" slot (or press G on desktop) to open the **settings menu**: a floating panel 1.2 m ahead,
+world-locked, with a drag bar on top and tabs Room / Video / View / Deal. Choices are chips, numbers are
+sliders (trigger-drag the track, or − / + for single steps), toggles are pills; everything applies live
+except the Room tab's shape, size, pieces and bezels, which take effect on "Apply layout" (hold 0.7 s). The
+menu reads and writes the browser panel's inputs, so both always agree. ✕ or the slot again closes it.
+Hold the trigger on "shuffle ♥" for 0.7 s (a red bar fills under it) to put a random liked
 video on every screen except the pinned ones; this draws on every like, including videos whose folder is
 not currently loaded (opened from the stored file handle; ones the browser refuses are counted in the status
 line and skipped). Dismissed likes are left out. On desktop the slots work with the mouse: click shuffle, hold shuffle ♥, drag deploy ♥ onto a screen.
@@ -151,6 +156,12 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   (`mouseSlot`, `mouseSlotDrag` for deploy ♥ with the mouse, `mouseSlotHold`). `shuffleLikes()` deals from
   `likePool()`: library likes plus pseudo entries (`key: 'like:<id>'`, cached in `extraLikeEntries`) for likes
   outside the library, opened through their handles.
+- **Settings menu**: `menuMesh` is a 1600 × 1100 canvas plane (`drawMenu()` lays out `menuWidgets()` for the
+  current tab and records `menuHits` rectangles; `menuAt(uv)` maps a hit to one). `menuPress()` acts on taps
+  (tab, close, chip, toggle, − / +) and returns an ongoing interaction for sliders (`{ slider }`), hold buttons
+  (`{ hold, idx, t0 }`) and the drag bar (`{ bar, dist, off }`), which `menuContinue()` drives each frame from
+  the hand ray (`handleMenuHand`, called first in `updateHand`) or the mouse (`mouseMenu` in `updateMouse`).
+  Widgets never hold state: they read the HTML inputs and write back with a `change` event.
 - **Transitions**: `setTileSource()` / `swapPlaces()` / `copyTo()` never put the new material on the mesh
   directly; they call `enterWith(tile, video, mat, finish, enter)`, which waits for the video to have a frame
   (`loadeddata`) and then runs the entrance: `popIn` (overlay mesh with the new fit, scaled 0 → 1 over the

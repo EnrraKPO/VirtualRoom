@@ -1785,7 +1785,7 @@ function placePanel(tile) {
 }
 // ---- Station board: a small table that follows you at waist height, below the straight-ahead view.
 // Faint until you look at it or point at it. Its slots are drag sources: drag "Deploy favourite" onto a screen.
-const BOARD_W = 0.5, BOARD_H = 0.25, BOARD_AHEAD = 0.55, BOARD_DROP = 0.9, BOARD_TILT = THREE.MathUtils.degToRad(-55);
+const BOARD_W = 0.66, BOARD_H = 0.25, BOARD_AHEAD = 0.55, BOARD_DROP = 0.9, BOARD_TILT = THREE.MathUtils.degToRad(-55);
 const board = new THREE.Group();
 scene.add(board);
 const boardMat = new THREE.MeshBasicMaterial({ color: 0x101418, transparent: true, opacity: 0.3, depthTest: false, depthWrite: false });
@@ -1842,10 +1842,20 @@ function setSlotHold(mesh, frac) {   // progress bar under the slot being held (
   slotBar.visible = true; slotBar.scale.x = Math.max(0.001, Math.min(1, frac));
   slotBar.position.set(mesh.position.x - 0.06 + 0.06 * slotBar.scale.x, mesh.position.y - 0.075, 0.003);
 }
-const boardSlots = [deploySlot, shuffleSlot, likesSlot];
+const gearSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, map: slotTexture(c => {
+  c.strokeStyle = '#ccc'; c.lineWidth = 16; c.lineCap = 'round';                 // gear: ring with 8 teeth
+  c.beginPath(); c.arc(128, 110, 44, 0, Math.PI * 2); c.stroke();
+  for (let k = 0; k < 8; k++) { const a = k * Math.PI / 4; c.beginPath(); c.moveTo(128 + 54 * Math.cos(a), 110 + 54 * Math.sin(a)); c.lineTo(128 + 76 * Math.cos(a), 110 + 76 * Math.sin(a)); c.stroke(); }
+  c.fillStyle = '#fff'; c.font = 'bold 30px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('settings', 128, 225);
+}) });
+const gearSlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), gearSlotMat);
+gearSlot.position.set(-BOARD_W / 2 + 0.54, 0, 0.002); gearSlot.renderOrder = 26; gearSlot.userData.slot = 'settings';
+board.add(gearSlot);
+const boardSlots = [deploySlot, shuffleSlot, likesSlot, gearSlot];
 const slotMesh = kind => boardSlots.find(m => m.userData.slot === kind);
 const slotNeedsHold = kind => !!(slotMesh(kind) && slotMesh(kind).userData.hold);
-function tapSlot(kind) { if (kind === 'shuffle') dealRandom(); else if (kind === 'likes') shuffleLikes(); }
+function tapSlot(kind) { if (kind === 'shuffle') dealRandom(); else if (kind === 'likes') shuffleLikes(); else if (kind === 'settings') toggleMenu(); }
 const BOARD_SLOT = { isBoard: true, label: '' };   // drag source sentinel for the deploy slot
 const _bf = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bm = new THREE.Matrix4();
 let boardYaw = null, boardHot = false;
@@ -1869,8 +1879,225 @@ function updateBoard(dt) {
   const gazing = toBoard.dot(_bf) > Math.cos(THREE.MathUtils.degToRad(25));
   const target = gazing || boardHot ? 1 : 0.3;
   boardMat.opacity += (target - boardMat.opacity) * Math.min(1, dt * 8);
-  deploySlotMat.opacity = shuffleSlotMat.opacity = likesSlotMat.opacity = boardMat.opacity;
+  deploySlotMat.opacity = shuffleSlotMat.opacity = likesSlotMat.opacity = gearSlotMat.opacity = boardMat.opacity;
 }
+
+// ---- Settings menu: a floating canvas panel for VR (and the mouse), driven by the browser panel's own inputs.
+// Widgets read the HTML inputs and write them back with a change event, so persistence and live refits run
+// through one code path and the two panels always agree. Chips for choices, sliders (drag, or − / +) for numbers,
+// pills for toggles; Apply is a hold button. Tabs: Room / Video / View / Deal.
+const MENU_W = 0.9, MENU_PX_W = 1600, MENU_PX_H = 1100, MENU_AHEAD = 1.2;
+const menuCanvas = document.createElement('canvas'); menuCanvas.width = MENU_PX_W; menuCanvas.height = MENU_PX_H;
+const menuCtx = menuCanvas.getContext('2d');
+const menuTex = new THREE.CanvasTexture(menuCanvas); menuTex.colorSpace = THREE.SRGBColorSpace;
+const menuMat = new THREE.MeshBasicMaterial({ map: menuTex, transparent: true, depthTest: false, depthWrite: false });
+const menuMesh = new THREE.Mesh(new THREE.PlaneGeometry(MENU_W, MENU_W * MENU_PX_H / MENU_PX_W), menuMat);
+menuMesh.renderOrder = 40; menuMesh.visible = false;
+scene.add(menuMesh);
+const MENU_TABS = ['Room', 'Video', 'View', 'Deal'];
+let menuTab = 'Room', menuHits = [], menuHover = -1, menuHold = null;   // hits: [{ kind, x0, y0, x1, y1, ... }]
+const SHAPE_SHORT = { box: 'Box', prism: 'Prism', tetra: 'Tetra', octa: 'Octa', dodeca: 'Dodeca', icosa: 'Icosa', geo2: 'Geo 80', trap: 'Trapezo' };
+const DEAL_SHORT = { all: 'All', likedFirst: 'Liked first', likedOnly: 'Liked only' };
+const FILL_SHORT = { blank: 'Blank', mirror: 'Mirrored', nested: 'Nested' };
+function menuWidgets() {
+  const v = $('shape').value, box = v === 'box', prism = v === 'prism', trap = v === 'trap', poly = !!POLY_SHAPES[v];
+  const nested = $('fillMode').value === 'nested';
+  const W = {
+    Room: [
+      { type: 'chips', id: 'shape', label: 'Shape', short: SHAPE_SHORT },
+      prism || trap ? { type: 'slider', id: 'prismN', label: trap ? 'N (2N kites)' : 'Walls' } : null,
+      { type: 'slider', id: 'roomW', label: box ? 'Width' : 'Across', unit: ' m' },
+      box ? { type: 'slider', id: 'roomD', label: 'Depth', unit: ' m' } : null,
+      poly ? null : { type: 'slider', id: 'roomH', label: 'Height', unit: ' m' },
+      poly ? { type: 'slider', id: 'faceN', label: 'Pieces / face' } : { type: 'slider', id: 'wallN', label: 'Pieces / wall' },
+      poly ? null : { type: 'slider', id: 'flatN', label: 'Floor / ceiling' },
+      { type: 'toggle', id: 'bezel', label: 'Bezels' },
+      { type: 'button', label: 'Apply layout (hold)', hold: true, act: () => buildLayout() },
+    ],
+    Video: [
+      { type: 'slider', id: 'maxCrop', label: 'Max crop', unit: ' %' },
+      { type: 'chips', id: 'fillMode', label: 'Fill the rest', short: FILL_SHORT },
+      nested ? { type: 'slider', id: 'nestDepth', label: 'Nesting depth' } : null,
+      nested ? { type: 'slider', id: 'nestInc', label: '+ crop / level', unit: ' %' } : null,
+      nested ? { type: 'toggle', id: 'nestFlip', label: 'Flipped copies' } : null,
+      nested ? { type: 'chips', id: 'nestFallback', label: 'Too small', short: { mirror: 'Mirrored', blank: 'Blank' } } : null,
+    ],
+    View: [
+      { type: 'slider', id: 'focusFov', label: 'Focus size', unit: '°' },
+      { type: 'toggle', id: 'dimOthers', label: 'Dim others' },
+      { type: 'chips', id: 'turnMode', label: 'Turning', short: { smooth: 'Smooth', snap: 'Snap 15°' } },
+      { type: 'chips', id: 'transitions', label: 'Transitions', short: { normal: 'Normal', quick: 'Quick', slow: 'Slow', off: 'Off' } },
+    ],
+    Deal: [
+      { type: 'chips', id: 'dealMode', label: 'Deal', short: DEAL_SHORT },
+      { type: 'toggle', id: 'randomStart', label: 'Random start' },
+      { type: 'slider', id: 'autoJump', label: 'Auto-jump', unit: ' s' },
+      { type: 'toggle', id: 'mute', label: 'Mute all' },
+    ],
+  };
+  return W[menuTab].filter(Boolean);
+}
+const fmtVal = (el, v) => { const st = +el.step || 1; return (st < 1 ? (+v).toFixed(1) : String(Math.round(+v))); };
+function drawMenu() {
+  const c = menuCtx, Wc = MENU_PX_W, Hc = MENU_PX_H;
+  menuHits = [];
+  c.clearRect(0, 0, Wc, Hc);
+  c.fillStyle = 'rgba(10,12,16,0.94)'; c.beginPath(); c.roundRect(0, 0, Wc, Hc, 40); c.fill();
+  c.textBaseline = 'middle';
+  // grab bar
+  c.fillStyle = '#1c2028'; c.beginPath(); c.roundRect(0, 0, Wc, 70, [40, 40, 0, 0]); c.fill();
+  c.fillStyle = '#777'; c.font = '30px system-ui, sans-serif'; c.textAlign = 'center'; c.fillText('⋯  drag to move  ⋯', Wc / 2, 36);
+  menuHits.push({ kind: 'bar', x0: 0, y0: 0, x1: Wc - 120, y1: 70 });
+  // tabs + close
+  let x = 40;
+  for (const t of MENU_TABS) {
+    const on = t === menuTab, i = menuHits.length;
+    c.fillStyle = on ? '#4aa8ff' : menuHover === i ? '#3a4150' : '#262b34';
+    c.beginPath(); c.roundRect(x, 90, 300, 90, 20); c.fill();
+    c.fillStyle = on ? '#000' : '#ddd'; c.font = 'bold 40px system-ui, sans-serif'; c.textAlign = 'center'; c.fillText(t, x + 150, 135);
+    menuHits.push({ kind: 'tab', tab: t, x0: x, y0: 90, x1: x + 300, y1: 180 });
+    x += 320;
+  }
+  { const i = menuHits.length; c.fillStyle = menuHover === i ? '#d04040' : '#262b34'; c.beginPath(); c.roundRect(Wc - 130, 90, 90, 90, 20); c.fill();
+    c.fillStyle = '#fff'; c.font = 'bold 44px system-ui, sans-serif'; c.textAlign = 'center'; c.fillText('✕', Wc - 85, 135);
+    menuHits.push({ kind: 'close', x0: Wc - 130, y0: 90, x1: Wc - 40, y1: 180 }); }
+  // widgets
+  let y = 230;
+  const LX = 60, CX0 = 480, CX1 = 1540;
+  for (const w of menuWidgets()) {
+    const el = w.id ? $(w.id) : null;
+    c.fillStyle = '#ccc'; c.font = '40px system-ui, sans-serif'; c.textAlign = 'left';
+    if (w.type === 'slider') {
+      c.fillText(w.label, LX, y + 40);
+      const min = +el.min || 0, max = +el.max || 100, val = +el.value || 0, tx0 = CX0 + 110, tx1 = CX1 - 110;
+      for (const [d, bx, lab] of [[-1, CX0, '−'], [1, CX1 - 80, '+']]) {
+        const i = menuHits.length;
+        c.fillStyle = menuHover === i ? '#4aa8ff' : '#2e3440'; c.beginPath(); c.roundRect(bx, y, 80, 80, 16); c.fill();
+        c.fillStyle = '#fff'; c.font = 'bold 48px system-ui, sans-serif'; c.textAlign = 'center'; c.fillText(lab, bx + 40, y + 40);
+        menuHits.push({ kind: 'step', w, d, x0: bx, y0: y, x1: bx + 80, y1: y + 80 });
+      }
+      const i = menuHits.length, f = Math.max(0, Math.min(1, (val - min) / (max - min))), kx = tx0 + (tx1 - tx0) * f;
+      c.fillStyle = '#2e3440'; c.beginPath(); c.roundRect(tx0, y + 30, tx1 - tx0, 20, 10); c.fill();
+      c.fillStyle = menuHover === i ? '#6fbcff' : '#4aa8ff'; c.beginPath(); c.roundRect(tx0, y + 30, kx - tx0, 20, 10); c.fill();
+      c.beginPath(); c.arc(kx, y + 40, 30, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#fff'; c.font = 'bold 34px system-ui, sans-serif'; c.textAlign = 'center'; c.fillText(fmtVal(el, val) + (w.unit || ''), kx, y - 8);
+      menuHits.push({ kind: 'track', w, tx0, tx1, x0: tx0 - 20, y0: y - 30, x1: tx1 + 20, y1: y + 90 });
+      y += 130;
+    } else if (w.type === 'chips') {
+      c.fillText(w.label, LX, y + 38);
+      let cx = CX0, cy = y; c.font = 'bold 36px system-ui, sans-serif';
+      for (const o of el.options) {
+        const text = (w.short && w.short[o.value]) || o.text, cw = c.measureText(text).width + 50;
+        if (cx + cw > CX1) { cx = CX0; cy += 90; }
+        const i = menuHits.length, on = el.value === o.value;
+        c.fillStyle = on ? '#4aa8ff' : menuHover === i ? '#3a4150' : '#2e3440'; c.beginPath(); c.roundRect(cx, cy, cw, 76, 18); c.fill();
+        c.fillStyle = on ? '#000' : '#eee'; c.textAlign = 'center'; c.fillText(text, cx + cw / 2, cy + 38);
+        menuHits.push({ kind: 'chip', w, value: o.value, x0: cx, y0: cy, x1: cx + cw, y1: cy + 76 });
+        cx += cw + 14;
+      }
+      y = cy + 110;
+    } else if (w.type === 'toggle') {
+      c.fillText(w.label, LX, y + 38);
+      const i = menuHits.length, on = el.checked;
+      c.fillStyle = on ? '#4aa8ff' : menuHover === i ? '#3a4150' : '#2e3440'; c.beginPath(); c.roundRect(CX0, y, 150, 76, 38); c.fill();
+      c.fillStyle = on ? '#fff' : '#888'; c.beginPath(); c.arc(on ? CX0 + 112 : CX0 + 38, y + 38, 28, 0, Math.PI * 2); c.fill();
+      c.fillStyle = '#bbb'; c.font = '34px system-ui, sans-serif'; c.textAlign = 'left'; c.fillText(on ? 'on' : 'off', CX0 + 170, y + 38);
+      menuHits.push({ kind: 'toggle', w, x0: CX0, y0: y, x1: CX0 + 150, y1: y + 76 });
+      y += 110;
+    } else if (w.type === 'button') {
+      const i = menuHits.length, bw = 620;
+      c.fillStyle = menuHover === i ? '#3a4150' : '#2e3440'; c.beginPath(); c.roundRect(CX0, y, bw, 84, 20); c.fill();
+      if (menuHold && menuHold.idx === i) { c.save(); c.beginPath(); c.roundRect(CX0, y, bw, 84, 20); c.clip(); c.fillStyle = '#d04040'; c.fillRect(CX0, y, bw * Math.min(1, menuHold.frac), 84); c.restore(); }
+      c.fillStyle = '#fff'; c.font = 'bold 40px system-ui, sans-serif'; c.textAlign = 'center'; c.fillText(w.label, CX0 + bw / 2, y + 42);
+      menuHits.push({ kind: 'button', w, x0: CX0, y0: y, x1: CX0 + bw, y1: y + 84 });
+      y += 120;
+    }
+  }
+  menuTex.needsUpdate = true;
+}
+function menuAt(uv) {
+  if (!uv) return -1;
+  const x = uv.x * MENU_PX_W, y = (1 - uv.y) * MENU_PX_H;
+  return menuHits.findIndex(h => x >= h.x0 && x <= h.x1 && y >= h.y0 && y <= h.y1);
+}
+function menuSetInput(id, value) {
+  const el = $(id); el.value = value;
+  el.dispatchEvent(new Event('change', { bubbles: true }));
+  drawMenu();
+}
+function menuSliderAt(h, uvx) {
+  const el = $(h.w.id), min = +el.min || 0, max = +el.max || 100, st = +el.step || 1;
+  const f = Math.max(0, Math.min(1, (uvx * MENU_PX_W - h.tx0) / (h.tx1 - h.tx0)));
+  const v = Math.round((min + f * (max - min)) / st) * st;
+  el.value = st < 1 ? v.toFixed(1) : String(v);
+  drawMenu();
+}
+// A press on hit i. Returns an ongoing interaction ({ slider } | { hold, idx, t0 } | { bar, dist, off }) or null.
+function menuPress(i, hit, now) {
+  const h = menuHits[i]; if (!h) return null;
+  if (h.kind === 'tab') { menuTab = h.tab; menuHover = -1; drawMenu(); return null; }
+  if (h.kind === 'close') { closeMenu(); return null; }
+  if (h.kind === 'chip') { menuSetInput(h.w.id, h.value); return null; }
+  if (h.kind === 'toggle') { const el = $(h.w.id); el.checked = !el.checked; el.dispatchEvent(new Event('change', { bubbles: true })); drawMenu(); return null; }
+  if (h.kind === 'step') { const el = $(h.w.id), st = +el.step || 1, v = Math.max(+el.min || 0, Math.min(+el.max || 100, (+el.value || 0) + h.d * st)); menuSetInput(h.w.id, st < 1 ? v.toFixed(1) : String(v)); return null; }
+  if (h.kind === 'track') { menuSliderAt(h, hit.uv.x); return { slider: h }; }
+  if (h.kind === 'button') { if (h.w.hold) return { hold: h, idx: i, t0: now }; h.w.act(); drawMenu(); return null; }
+  if (h.kind === 'bar') { const off = menuMesh.worldToLocal(hit.point.clone()); return { bar: true, dist: hit.distance, off }; }
+  return null;
+}
+function menuSliderEnd(h) { $(h.w.id).dispatchEvent(new Event('change', { bubbles: true })); drawMenu(); }
+function setMenuHold(idx, frac) { menuHold = idx == null ? null : { idx, frac }; drawMenu(); }
+const _mo = new THREE.Vector3();
+function menuMoveTo(ray, m) {   // keep the grabbed point of the bar under the beam, facing the eye
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(_eye);
+  _mo.copy(ray.direction).multiplyScalar(m.dist).add(ray.origin);
+  menuMesh.position.copy(_mo).sub(m.off.clone().applyQuaternion(menuMesh.quaternion));
+  menuMesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().lookAt(_eye, menuMesh.position, new THREE.Vector3(0, 1, 0)));
+}
+function openMenu() {
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(_eye); cam.getWorldDirection(_mo); _mo.y = 0; if (_mo.lengthSq() < 1e-6) _mo.set(0, 0, -1); _mo.normalize();
+  menuMesh.position.copy(_eye).addScaledVector(_mo, MENU_AHEAD); menuMesh.position.y -= 0.1;
+  menuMesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().lookAt(_eye, menuMesh.position, new THREE.Vector3(0, 1, 0)));
+  menuMesh.visible = true; menuHover = -1; menuHold = null;
+  drawMenu();
+}
+function closeMenu() { menuMesh.visible = false; menuHover = -1; menuHold = null; for (const h of hands) h.menu = null; mouseMenu = null; }
+function toggleMenu() { if (menuMesh.visible) closeMenu(); else openMenu(); }
+// Drive an ongoing menu interaction (slider drag, hold, bar move) from a ray; returns false when it has ended.
+function menuContinue(m, ray, pressed, now) {
+  if (!pressed) { if (m.slider) menuSliderEnd(m.slider); if (m.hold) setMenuHold(null); return false; }
+  const hit = raycaster.intersectObject(menuMesh, false)[0];
+  if (m.slider && hit) menuSliderAt(m.slider, hit.uv.x);
+  if (m.hold) {
+    if (!hit || menuAt(hit.uv) !== m.idx) { setMenuHold(null); return false; }
+    const f = (now - m.t0) / HOLD_MS; setMenuHold(m.idx, f);
+    if (f >= 1) { setMenuHold(null); m.hold.w.act(); drawMenu(); return false; }
+  }
+  if (m.bar) menuMoveTo(ray, m);
+  return true;
+}
+// VR hand on the menu: hover, press, and ongoing interactions. Returns true when the hand is busy with the menu.
+function handleMenuHand(hand, hit, now) {
+  const onMenu = !!hit && hit.object === menuMesh;
+  const gp = hand.source.gamepad, trig = !!(gp && gp.buttons[0] && gp.buttons[0].pressed);
+  if (hand.menu) {
+    if (!menuContinue(hand.menu, raycaster.ray, trig, now)) hand.menu = null;
+    if (hit) { hand.dot.position.copy(hit.point); hand.dot.visible = true; hand.beam.scale.z = hit.distance; }
+    hand.prev.trigger = trig; return true;
+  }
+  if (!onMenu) { if (hand.onMenu) { hand.onMenu = false; menuHover = -1; drawMenu(); } return false; }
+  hand.onMenu = true;
+  hand.dot.position.copy(hit.point); hand.dot.visible = true; hand.beam.scale.z = hit.distance;
+  if (hand.hovered) { hand.hovered = null; }
+  const i = menuAt(hit.uv);
+  if (i !== menuHover) { menuHover = i; drawMenu(); }
+  if (trig && !hand.prev.trigger && i >= 0) hand.menu = menuPress(i, hit, now);
+  hand.prev.trigger = trig;
+  return true;
+}
+let mouseMenu = null, mouseOnMenu = false, mouseMenuHit = null;
 
 // Per-frame HUD: contour progress on the hovered screen, floating sound icons on hovered or audible screens.
 const _iw = new THREE.Vector3();
@@ -1945,6 +2172,7 @@ function updateHand(hand, dt, now) {
   raycaster.ray.origin.setFromMatrixPosition(hand.ctrl.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
   const hit = pickHit();
+  if (menuMesh.visible && handleMenuHand(hand, hit, now)) return;
   const onPanel = hit && hit.object === panelMesh, slot = hit ? hit.object.userData.slot : null, onSlot = !!slot;
   const tile = hit ? (onPanel ? focusTile : onSlot ? null : tileFor(hit.object)) : null;
   if (hit) { hand.dot.position.copy(hit.point); hand.dot.visible = true; hand.beam.scale.z = hit.distance; }
@@ -2029,7 +2257,7 @@ function updateHand(hand, dt, now) {
   // different screen = two-screen action (trigger drag = swap places, grip drag = copy).
   if (trigger && !p.trigger && tile) startDrag(hand, 'swap', tile, now, lx, ly, hit);
   if (trigger && !p.trigger && slot === 'liked') startDrag(hand, 'liked', BOARD_SLOT, now);
-  if (trigger && !p.trigger && slot === 'shuffle') hand.tapSlot = slot;   // tap (press + release on the same slot)
+  if (trigger && !p.trigger && (slot === 'shuffle' || slot === 'settings')) hand.tapSlot = slot;   // tap (press + release on the same slot)
   if (!trigger && p.trigger && hand.tapSlot) { const k = hand.tapSlot; hand.tapSlot = null; if (slot === k) tapSlot(k); }
   if (trigger && !p.trigger && slot && slotNeedsHold(slot)) hand.holdSlot = { kind: slot, t0: now };   // hold slots fire after HOLD_MS
   if (hand.holdSlot) {
@@ -2205,6 +2433,7 @@ function endDrag(hand, target, now) {
 // then the focus screen (it draws over the room even when it sits beyond a wall), then the room's screens.
 function pickHit() {
   const layers = [];
+  if (menuMesh.visible) layers.push([menuMesh]);
   layers.push(boardSlots);   // the station board slots: trigger in VR, mouse on desktop
   if (panelMesh.visible) layers.push([panelMesh]);
   if (focused && !anim) layers.push([floatMesh]);
@@ -2222,7 +2451,13 @@ const mouse = new THREE.Vector2(2, 2);
 let mouseTile = null;
 let mouseHold = null;   // { idx, t0 } while the mouse button is held on a hold button
 let mouseSlot = null, mouseSlotDrag = false, mouseSlotHold = null;   // station board slot under the mouse; dragging from the deploy slot; holding a hold slot
+let mouseMenuDown = false;
 renderer.domElement.addEventListener('pointerdown', e => {
+  if (e.button === 0 && menuMesh.visible && mouseOnMenu && mouseMenuHit) {
+    mouseMenuDown = true; const i = menuAt(mouseMenuHit.uv);
+    mouseMenu = i >= 0 ? menuPress(i, mouseMenuHit, performance.now()) : null;
+    return;
+  }
   dragging = true; moved = false; downX = e.clientX; downY = e.clientY;
   if (e.button === 0 && mouseTile && panelHoverBtn >= 0 && panelBtns[panelHoverBtn].hold) mouseHold = { idx: panelHoverBtn, t0: performance.now() };
   if (e.button === 0 && mouseSlot === 'liked') mouseSlotDrag = true;
@@ -2230,6 +2465,7 @@ renderer.domElement.addEventListener('pointerdown', e => {
 });
 addEventListener('pointerup', e => {
   dragging = false;
+  if (mouseMenuDown) { mouseMenuDown = false; return; }   // menu interactions end in updateMouse via menuContinue
   const held = mouseHold; mouseHold = null;
   if (held) { if (!held.fired) setPanelHold(null); return; }   // released early, or it already fired: no click
   if (mouseSlotDrag) { mouseSlotDrag = false; if (mouseTile) deployLiked(mouseTile); return; }   // deploy ♥ dragged onto a screen
@@ -2269,7 +2505,8 @@ addEventListener('keydown', e => {
       marked = null; setStatus(e.code === 'KeyX' ? 'Swapped.' : 'Copied.');
     }
   }
-  if (e.code === 'Escape') { marked = null; }
+  if (e.code === 'Escape') { marked = null; if (menuMesh.visible) closeMenu(); }
+  if (e.code === 'KeyG') toggleMenu();
   if (e.code === 'Equal' || e.code === 'NumpadAdd') { scaleRoom(1.1); commitRoomScale(); }
   if (e.code === 'Minus' || e.code === 'NumpadSubtract') { scaleRoom(1 / 1.1); commitRoomScale(); }
 });
@@ -2289,6 +2526,18 @@ function updateMouse() {
   if (renderer.xr.isPresenting) { mouseTile = null; return; }
   raycaster.setFromCamera(mouse, camera);
   const hit = pickHit();
+  if (menuMesh.visible) {
+    if (mouseMenu && !menuContinue(mouseMenu, raycaster.ray, mouseMenuDown, performance.now())) mouseMenu = null;
+    const on = !!hit && hit.object === menuMesh;
+    if (on) {
+      mouseOnMenu = true; mouseMenuHit = hit; mouseSlot = null;
+      if (mouseTile) { mouseTile = null; setFocus(null); }
+      const i = menuAt(hit.uv); if (i !== menuHover) { menuHover = i; drawMenu(); }
+      return;
+    }
+    if (mouseOnMenu) { mouseOnMenu = false; mouseMenuHit = null; if (!mouseMenu) { menuHover = -1; drawMenu(); } }
+    if (mouseMenu) return;   // dragging a slider or the bar off the panel: keep the mouse on the menu
+  }
   const onPanel = hit && hit.object === panelMesh;
   mouseSlot = hit ? hit.object.userData.slot || null : null;
   const tile = hit ? (onPanel ? focusTile : mouseSlot ? null : tileFor(hit.object)) : null;

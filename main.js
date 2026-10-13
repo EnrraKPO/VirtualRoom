@@ -244,6 +244,49 @@ function fitTile(tile, aspect) {
   const g = tile.mesh.geometry, pos = g.attributes.position, uv = g.attributes.uv;
   for (let i = 0; i < pos.count; i++) uv.setXY(i, (pos.getX(i) - cx) / vw + 0.5, (pos.getY(i) - cy) / vh + 0.5);
   uv.needsUpdate = true;
+  updateSeams(tile, blank, cx, cy, vw, vh, x0, x1, y0, y1);
+}
+// Mirror mode: subtle lines where the video starts repeating, so the reflections read as reflections.
+const SEAM_W = 0.008;
+const seamMat = new THREE.MeshBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.45, depthWrite: false });
+function clipSegment(a, b, poly) {   // part of segment a-b inside the convex counter-clockwise polygon, or null
+  let t0 = 0, t1 = 1;
+  for (let i = 0; i < poly.length; i++) {
+    const p = poly[i], q = poly[(i + 1) % poly.length], ex = q[0] - p[0], ey = q[1] - p[1];
+    const fa = ex * (a[1] - p[1]) - ey * (a[0] - p[0]), fb = ex * (b[1] - p[1]) - ey * (b[0] - p[0]);
+    if (fa < 0 && fb < 0) return null;
+    if (fa < 0) t0 = Math.max(t0, fa / (fa - fb)); else if (fb < 0) t1 = Math.min(t1, fa / (fa - fb));
+    if (t0 >= t1) return null;
+  }
+  return [[a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0], [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1]];
+}
+function updateSeams(tile, blank, cx, cy, vw, vh, x0, x1, y0, y1) {
+  if (tile.isFloat) return;
+  const lines = [];
+  if (!blank) {
+    for (let k = 0; k < 6; k++) {
+      for (const sx of [cx - (k + 0.5) * vw, cx + (k + 0.5) * vw]) if (sx > x0 && sx < x1) lines.push([[sx, y0 - 1], [sx, y1 + 1]]);
+      for (const sy of [cy - (k + 0.5) * vh, cy + (k + 0.5) * vh]) if (sy > y0 && sy < y1) lines.push([[x0 - 1, sy], [x1 + 1, sy]]);
+    }
+  }
+  const pos = [], idx = [];
+  for (const [a, b] of lines) {
+    const seg = clipSegment(a, b, tile.poly); if (!seg) continue;
+    const [p, q] = seg, dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy); if (L < 1e-6) continue;
+    const nx = -dy / L * SEAM_W / 2, ny = dx / L * SEAM_W / 2, base = pos.length / 3;
+    pos.push(p[0] - nx, p[1] - ny, 0, q[0] - nx, q[1] - ny, 0, q[0] + nx, q[1] + ny, 0, p[0] + nx, p[1] + ny, 0);
+    idx.push(base, base + 1, base + 2, base, base + 2, base + 3);
+  }
+  if (!tile.seam) {
+    tile.seam = new THREE.Mesh(new THREE.BufferGeometry(), seamMat);
+    tile.seam.position.copy(tile.mesh.position); tile.seam.position.z = 0.002; tile.seam.renderOrder = 2;
+    tile.mesh.parent.add(tile.seam);
+  }
+  tile.seam.geometry.dispose();
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3)); g.setIndex(idx);
+  tile.seam.geometry = g;
+  tile.seam.visible = idx.length > 0;
 }
 const fitPolyUV = fitTile;
 function refitTile(t) { if (t.poly) fitTile(t, t.video && t.video.videoWidth ? t.video.videoWidth / t.video.videoHeight : 16 / 9); }

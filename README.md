@@ -32,8 +32,11 @@ presence and whether an `immersive-vr` session is supported.
 
 ## Controls
 
-Point a Sense controller at a screen; it gets a blue border and an info strip along its
-bottom edge (progress bar, name, time, speaker icon, pause mark, grid buttons).
+Point a Sense controller at a screen; it gets a blue border, an info strip along its
+bottom edge (progress bar, name, time, speaker icon, pause mark) and a small button panel
+in its bottom-right corner (grid or split level with − / + buttons). The panel is a fixed
+36 cm wide whatever the screen size, and slides inward on triangles and kites so it always
+stays on the face.
 
 **Tap (pointing at a screen)**
 
@@ -45,7 +48,7 @@ bottom edge (progress bar, name, time, speaker icon, pause mark, grid buttons).
 | A / X | pause / play |
 | B / Y | focus: lift the screen off the wall into a big floating panel; again to send it back |
 | Stick click | jump to a random point in the timeline |
-| Strip buttons | − / + columns and rows for **that wall only** (other walls keep playing); on a polyhedron face − / + change its split level |
+| Panel buttons | − / + columns and rows for **that wall only** (other walls keep playing); on a polyhedron face − / + change its split level |
 
 **Drag (press on one screen, release on another)**
 
@@ -107,8 +110,11 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
 - **Room scale**: `roomGroup.scale` + `roomGroup.position`, scaled about the head so the
   floor stays at y=0 and walls recede evenly. `commitRoomScale()` bakes the live scale into
   the W/D/H fields on stick release.
-- **Strip**: single `CanvasTexture` strip mesh re-parented to the focused tile's surface
-  group. Strip is in the raycast target list; `stripButtonAt(uv)` maps hits to buttons.
+- **Strip and panel**: `stripMesh` (info, not interactive) and `panelMesh` (buttons) are single
+  `CanvasTexture` meshes re-parented to the focused tile's surface group. Only the panel is in the
+  raycast list; `panelButtonAt(uv)` maps hits to buttons. Every tile has an `outline` polygon;
+  `fitBand()` finds the lowest band inside it wide enough for the panel (shrinking the panel if
+  needed) and `placeStrip()` puts the strip on the widest band of a polygon tile.
 - **Gamepad mapping** (WebXR standard): 0 trigger, 1 grip, 3 stick click, 4 A/X, 5 B/Y,
   axes 2/3 thumbstick.
 
@@ -129,7 +135,6 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
 
 - Spatial audio (Web Audio panner so sound comes from the screen's wall).
 - Preload the next swap candidate to hide the ~200 ms black frame.
-- Fixed physical strip height so grid buttons stay usable on 8×8 walls.
 - Save/restore layouts (grids, room size, which video where).
 - Per-screen cropping of a mosaic video (many clips in one decoder).
 - Native build (Unity/Godot OpenXR) if WebXR limits are hit.

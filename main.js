@@ -241,7 +241,7 @@ function buildSurface(s) {
     const hl = new THREE.Mesh(new THREE.PlaneGeometry(tw + 0.05, th + 0.05), highlightMat);
     hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
     g.add(hl);
-    const tile = { mesh: m, w: tw, h: th, video: null, label: '', highlight: hl, surface: s.key };
+    const tile = { mesh: m, w: tw, h: th, video: null, label: '', highlight: hl, surface: s.key, outline: [[-tw / 2, -th / 2], [tw / 2, -th / 2], [tw / 2, th / 2], [-tw / 2, th / 2]] };
     tiles.push(tile); tileOf.set(m, tile); made.push(tile);
   }
   return made;
@@ -270,7 +270,7 @@ function buildFaceTiles(s, g, level, bezel) {
     const hl = new THREE.Mesh(shapeGeometry(pts.map(p => [p[0] * 1.08, p[1] * 1.08])), highlightMat);
     hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
     g.add(hl);
-    const tile = { mesh: m, w, h, video: null, label: '', highlight: hl, surface: s.key, poly: pts };
+    const tile = { mesh: m, w, h, video: null, label: '', highlight: hl, surface: s.key, poly: pts, outline: pts };
     fitPolyUV(tile, 16 / 9);
     tiles.push(tile); tileOf.set(m, tile); made.push(tile);
   }
@@ -859,33 +859,130 @@ setInterval(() => {
 // ---- Info strip (canvas texture, shown on the focused tile only) ----
 const stripCanvas = document.createElement('canvas');
 stripCanvas.width = 1400; stripCanvas.height = 96;
-// Grid buttons drawn at the right end of the strip (canvas px). Clicked via the beam or mouse.
-const BTN_W = 64, BTN_GAP = 8, BTN_AREA = 4 * BTN_W + 3 * BTN_GAP + 110;
-const STRIP_BUTTONS = [
-  { label: '−', title: 'cols', dc: -1, dr: 0 }, { label: '+', title: 'cols', dc: 1, dr: 0 },
-  { label: '−', title: 'rows', dc: 0, dr: -1 }, { label: '+', title: 'rows', dc: 0, dr: 1 },
-].map((b, i) => ({ ...b, x0: 1400 - BTN_AREA + 110 + i * (BTN_W + BTN_GAP) + (i >= 2 ? 24 : 0), x1: 0 }));
-for (const b of STRIP_BUTTONS) b.x1 = b.x0 + BTN_W;
-let stripHoverBtn = -1;
-// Map a hit on the strip mesh to a button index (or -1)
-function stripButtonAt(uv) {
-  if (!uv) return -1;
-  const x = uv.x * stripCanvas.width, y = (1 - uv.y) * stripCanvas.height;
-  if (y < 26 || y > 94) return -1;
-  return STRIP_BUTTONS.findIndex(b => x >= b.x0 - 4 && x <= b.x1 + 4);
-}
-function pressStripButton(tile, idx) {
-  const b = STRIP_BUTTONS[idx]; if (!b) return;
-  const t = tile.isFloat ? tile.origin : tile;
-  if (t && t.surface) changeGrid(t.surface, b.dc, b.dr);
-}
-const stripButtonsFor = g => g && g.face ? STRIP_BUTTONS.slice(0, 2) : STRIP_BUTTONS;
+const STRIP_PAD = 24;   // right margin of the info strip (canvas px)
 const stripCtx = stripCanvas.getContext('2d');
 const stripTex = new THREE.CanvasTexture(stripCanvas);
 stripTex.colorSpace = THREE.SRGBColorSpace;
 const stripMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
   new THREE.MeshBasicMaterial({ map: stripTex, transparent: true, depthTest: false }));
 stripMesh.renderOrder = 10; stripMesh.visible = false;
+
+// ---- Grid/split buttons: a small panel of fixed physical size, tucked into the hovered tile's bottom-right corner.
+const PANEL_W = 0.36, PANEL_H = 0.09, PANEL_MARGIN = 0.02;   // metres
+const panelCanvas = document.createElement('canvas');
+panelCanvas.width = 640; panelCanvas.height = 160;
+const BTN_W = 96, BTN_GAP = 10;
+const PANEL_BUTTONS = [
+  { label: '−', title: 'cols', dc: -1, dr: 0 }, { label: '+', title: 'cols', dc: 1, dr: 0 },
+  { label: '−', title: 'rows', dc: 0, dr: -1 }, { label: '+', title: 'rows', dc: 0, dr: 1 },
+].map((b, i) => ({ ...b, x0: 124 + i * (BTN_W + BTN_GAP) + (i >= 2 ? 26 : 0) }));
+for (const b of PANEL_BUTTONS) b.x1 = b.x0 + BTN_W;
+let panelHoverBtn = -1;
+const panelButtonsFor = g => g && g.face ? PANEL_BUTTONS.slice(0, 2) : PANEL_BUTTONS;
+function panelButtonAt(uv) {
+  if (!uv) return -1;
+  const x = uv.x * panelCanvas.width, y = (1 - uv.y) * panelCanvas.height;
+  if (y < 30 || y > 150) return -1;
+  return PANEL_BUTTONS.findIndex(b => x >= b.x0 - 5 && x <= b.x1 + 5);
+}
+function pressPanelButton(tile, idx) {
+  const b = PANEL_BUTTONS[idx]; if (!b) return;
+  const t = tile.isFloat ? tile.origin : tile;
+  if (t && t.surface) changeGrid(t.surface, b.dc, b.dr);
+}
+const panelCtx = panelCanvas.getContext('2d');
+const panelTex = new THREE.CanvasTexture(panelCanvas);
+panelTex.colorSpace = THREE.SRGBColorSpace;
+const panelMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
+  new THREE.MeshBasicMaterial({ map: panelTex, transparent: true, depthTest: false }));
+panelMesh.renderOrder = 11; panelMesh.visible = false;
+function drawPanel(tile) {
+  const c = panelCtx, Wc = panelCanvas.width, Hc = panelCanvas.height;
+  const src = tile.isFloat ? tile.origin : tile;
+  const g = src && grids[src.surface];
+  const btns = panelButtonsFor(g);
+  const wide = btns[btns.length - 1].x1 + 20;
+  c.clearRect(0, 0, Wc, Hc);
+  c.fillStyle = 'rgba(0,0,0,0.7)';
+  c.beginPath(); c.roundRect(0, 0, wide, Hc, 24); c.fill();
+  c.fillStyle = '#ddd'; c.font = 'bold 40px system-ui, sans-serif'; c.textBaseline = 'middle'; c.textAlign = 'center';
+  c.fillText(g ? (g.face ? `L${g.cols}` : `${g.cols}×${g.rows}`) : '', 62, 90);
+  btns.forEach((b, i) => {
+    c.fillStyle = i === panelHoverBtn ? '#4aa8ff' : '#2e2e2e';
+    c.beginPath(); c.roundRect(b.x0, 44, BTN_W, 88, 14); c.fill();
+    c.fillStyle = '#fff'; c.font = 'bold 56px system-ui, sans-serif';
+    c.fillText(b.label, b.x0 + BTN_W / 2, 88);
+    if (i === 0 || i === 2) { c.fillStyle = '#aaa'; c.font = '26px system-ui, sans-serif'; c.fillText(g && g.face ? 'split' : b.title, b.x0 + BTN_W + BTN_GAP / 2, 22); }
+  });
+  panelTex.needsUpdate = true;
+  return wide / Wc;   // fraction of the canvas in use, so the mesh can be trimmed to it
+}
+// Horizontal chord [xl, xr] of a convex polygon at height y, or null.
+function chordAt(pts, y) {
+  let xl = Infinity, xr = -Infinity;
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i], b = pts[(i + 1) % pts.length];
+    if ((y < a[1]) === (y < b[1])) continue;
+    const x = a[0] + (b[0] - a[0]) * (y - a[1]) / (b[1] - a[1]);
+    xl = Math.min(xl, x); xr = Math.max(xr, x);
+  }
+  return xl <= xr ? [xl, xr] : null;
+}
+// Lowest band of height bh whose interior width is at least minW; returns { y (bottom), xl, xr } or null.
+function fitBand(pts, bh, minW, yMin) {
+  const ys = pts.map(p => p[1]), y0 = Math.max(Math.min(...ys), yMin), y1 = Math.max(...ys) - bh;
+  const steps = 32;
+  for (let i = 0; i <= steps; i++) {
+    const y = y0 + (y1 - y0) * i / steps;
+    const lo = chordAt(pts, y + 1e-6), hi = chordAt(pts, y + bh - 1e-6);
+    if (!lo || !hi) continue;
+    const xl = Math.max(lo[0], hi[0]), xr = Math.min(lo[1], hi[1]);
+    if (xr - xl >= minW) return { y, xl, xr };
+  }
+  return null;
+}
+function placePanel(tile) {
+  const used = drawPanel(tile);
+  const aspect = (panelCanvas.width * used) / panelCanvas.height;
+  if (tile.isFloat) {   // unit space inside floatGroup (scaled to the screen size)
+    const fw = floatGroup.scale.x, fh = floatGroup.scale.y;
+    const sh = Math.min(0.14, 0.22 / fh);
+    const pw = PANEL_W * used / fw, ph = PANEL_H / fh, m = PANEL_MARGIN / fw;
+    panelMesh.scale.set(pw, ph, 1);
+    panelMesh.position.set(0.5 - m - pw / 2, -0.5 + sh + PANEL_MARGIN / fh + ph / 2, 0.005);
+    return;
+  }
+  const k = 1 / roomScale;   // local units per metre
+  const sh = Math.min(tile.h * 0.14, 0.22);
+  const m = PANEL_MARGIN * k;
+  let scale = 1, band = null, pw = 0, ph = 0;
+  for (; scale >= 0.3; scale *= 0.8) {
+    pw = PANEL_H * aspect * k * scale; ph = PANEL_H * k * scale;
+    band = fitBand(tile.outline, ph + 2 * m, pw + 2 * m, -tile.h / 2 + sh);
+    if (band) break;
+  }
+  panelMesh.scale.set(pw, ph, 1);
+  if (band) panelMesh.position.set(tile.mesh.position.x + band.xr - m - pw / 2, tile.mesh.position.y + band.y + m + ph / 2, 0.005);
+  else panelMesh.position.set(tile.mesh.position.x, tile.mesh.position.y, 0.005);
+}
+// Put the info strip on the widest band that fits a polygon tile (rectangles: the bottom edge).
+function placeStrip(tile) {
+  const sh = Math.min(tile.h * 0.14, 0.22);
+  let x = tile.mesh.position.x, y = tile.mesh.position.y - tile.h / 2 + sh / 2, w = tile.w;
+  if (tile.poly) {
+    let best = null;
+    for (let i = 0; i <= 24; i++) {
+      const yb = -tile.h / 2 + (tile.h - sh) * i / 24;
+      const lo = chordAt(tile.poly, yb + 1e-6), hi = chordAt(tile.poly, yb + sh - 1e-6);
+      if (!lo || !hi) continue;
+      const xl = Math.max(lo[0], hi[0]), xr = Math.min(lo[1], hi[1]);
+      if (!best || xr - xl > best.w * 1.15) best = { y: yb, xl, xr, w: xr - xl };   // prefer lower bands unless clearly wider
+    }
+    if (best) { x += (best.xl + best.xr) / 2; y = tile.mesh.position.y + best.y + sh / 2; w = best.w; }
+  }
+  stripMesh.scale.set(w, sh, 1);
+  stripMesh.position.set(x, y, 0.004);
+}
 
 const fmt = s => { s = Math.max(0, s | 0); const m = (s / 60) | 0, h = (m / 60) | 0; return (h ? h + ':' + String(m % 60).padStart(2, '0') : m) + ':' + String(s % 60).padStart(2, '0'); };
 function drawStrip(tile) {
@@ -898,24 +995,11 @@ function drawStrip(tile) {
   c.fillStyle = '#4aa8ff'; c.fillRect(24, 14, (Wc - 48) * prog, 10);
   c.font = '34px system-ui, sans-serif'; c.textBaseline = 'middle'; c.fillStyle = '#fff';
   let name = tileName(tile.label) || '(empty)';
-  while (c.measureText(name).width > Wc - BTN_AREA - 440 && name.length > 4) name = name.slice(0, -2);
+  while (c.measureText(name).width > Wc - STRIP_PAD - 440 && name.length > 4) name = name.slice(0, -2);
   c.fillText(name, 24, 60);
-  const R = Wc - BTN_AREA;   // right edge of the info area
+  const R = Wc - STRIP_PAD;   // right edge of the info area
   c.textAlign = 'right';
   c.fillText(v ? `${fmt(v.currentTime)} / ${fmt(dur)}` : '', R - 150, 60);
-  c.textAlign = 'left';
-  // grid buttons: "3×2" then [− +] cols [− +] rows
-  const src = tile.isFloat ? tile.origin : tile;
-  const g = src && grids[src.surface];
-  c.fillStyle = '#aaa'; c.font = '28px system-ui, sans-serif';
-  c.fillText(g ? (g.face ? `L${g.cols}` : `${g.cols}×${g.rows}`) : '', R + 14, 60);
-  stripButtonsFor(g).forEach((b, i) => {
-    c.fillStyle = i === stripHoverBtn ? '#4aa8ff' : '#2a2a2a';
-    c.beginPath(); c.roundRect(b.x0, 30, BTN_W, 56, 10); c.fill();
-    c.fillStyle = '#fff'; c.font = 'bold 36px system-ui, sans-serif'; c.textAlign = 'center';
-    c.fillText(b.label, b.x0 + BTN_W / 2, 58);
-    if (i === 0 || i === 2) { c.fillStyle = '#aaa'; c.font = '18px system-ui, sans-serif'; c.fillText(g && g.face ? 'split' : b.title, b.x0 + BTN_W + BTN_GAP / 2, 20); }
-  });
   c.textAlign = 'left';
   // speaker icon
   const sx = R - 120, sy = 60;
@@ -936,19 +1020,17 @@ function setFocus(tile) {
   if (tile) {
     tile.highlight.visible = true;
     tile.mesh.parent.add(stripMesh);
+    tile.mesh.parent.add(panelMesh);
     if (tile.isFloat) {
       // floatGroup is scaled to the screen size, so position/scale in unit space
       const sh = Math.min(0.14, 0.22 / floatGroup.scale.y);
       stripMesh.scale.set(1, sh, 1);
       stripMesh.position.set(0, -0.5 + sh / 2, 0.004);
-    } else {
-      const sh = Math.min(tile.h * 0.14, 0.22);
-      stripMesh.scale.set(tile.w, sh, 1);
-      stripMesh.position.set(tile.mesh.position.x, tile.mesh.position.y - tile.h / 2 + sh / 2, 0.004);
-    }
-    stripMesh.visible = true;
+    } else placeStrip(tile);
+    placePanel(tile);
+    stripMesh.visible = true; panelMesh.visible = true;
   } else {
-    stripMesh.visible = false;
+    stripMesh.visible = false; panelMesh.visible = false;
   }
 }
 
@@ -978,19 +1060,19 @@ function updateHand(hand, dt, now) {
   raycaster.ray.origin.setFromMatrixPosition(hand.ctrl.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
   const hit = raycaster.intersectObjects(rayTargets(), false)[0];
-  const onStrip = hit && hit.object === stripMesh;
-  const tile = hit ? (onStrip ? focusTile : tileFor(hit.object)) : null;
+  const onPanel = hit && hit.object === panelMesh;
+  const tile = hit ? (onPanel ? focusTile : tileFor(hit.object)) : null;
   if (hit) { hand.dot.position.copy(hit.point); hand.dot.visible = true; hand.beam.scale.z = hit.distance; }
   else { hand.dot.visible = false; hand.beam.scale.z = 10; }
   if (tile && tile !== hand.hovered) setFocus(tile);
   hand.hovered = tile;
-  const btn = onStrip ? stripButtonAt(hit.uv) : -1;
-  if (btn !== stripHoverBtn) { stripHoverBtn = btn; if (focusTile) drawStrip(focusTile); }
+  const btn = onPanel ? panelButtonAt(hit.uv) : -1;
+  if (btn !== panelHoverBtn) { panelHoverBtn = btn; if (focusTile) drawPanel(focusTile); }
 
   const gp = hand.source.gamepad; if (!gp) return;
-  // Trigger on a strip button: do that and nothing else this press
+  // Trigger on a panel button: do that and nothing else this press
   if (btn >= 0 && gp.buttons[0] && gp.buttons[0].pressed && !hand.prev.trigger) {
-    pressStripButton(tile, btn); hand.prev.trigger = true; return;
+    pressPanelButton(tile, btn); hand.prev.trigger = true; return;
   }
   const b = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
   const trigger = b(0), grip = b(1), stick = b(3), primary = b(4), secondary = b(5);
@@ -1124,7 +1206,7 @@ function endDrag(hand, target, now) {
 function rayTargets() {
   const t = tiles.map(x => x.mesh);
   if (focused && !anim) t.push(floatMesh);
-  if (stripMesh.visible) t.unshift(stripMesh);   // strip sits in front of its tile; test it first
+  if (panelMesh.visible) t.unshift(panelMesh);   // button panel sits in front of its tile; test it first
   return t;
 }
 function tileFor(obj) { return obj === floatMesh ? floatTile : tileOf.get(obj); }
@@ -1138,7 +1220,7 @@ addEventListener('pointerup', e => {
   dragging = false;
   if (e.target !== renderer.domElement || renderer.xr.isPresenting) return;
   if (moved) return;
-  if (e.button === 0 && mouseTile && stripHoverBtn >= 0) { pressStripButton(mouseTile, stripHoverBtn); return; }
+  if (e.button === 0 && mouseTile && panelHoverBtn >= 0) { pressPanelButton(mouseTile, panelHoverBtn); return; }
   if (e.button === 0 && mouseTile) swapTile(mouseTile);
   if (e.button === 2 && mouseTile) toggleAudio(mouseTile, e.shiftKey);
 });
@@ -1190,11 +1272,11 @@ function updateMouse() {
   if (renderer.xr.isPresenting) { mouseTile = null; return; }
   raycaster.setFromCamera(mouse, camera);
   const hit = raycaster.intersectObjects(rayTargets(), false)[0];
-  const onStrip = hit && hit.object === stripMesh;
-  const tile = hit ? (onStrip ? focusTile : tileFor(hit.object)) : null;
+  const onPanel = hit && hit.object === panelMesh;
+  const tile = hit ? (onPanel ? focusTile : tileFor(hit.object)) : null;
   if (tile !== mouseTile) { mouseTile = tile; setFocus(tile); }
-  const btn = onStrip ? stripButtonAt(hit.uv) : -1;
-  if (btn !== stripHoverBtn) { stripHoverBtn = btn; if (focusTile) drawStrip(focusTile); }
+  const btn = onPanel ? panelButtonAt(hit.uv) : -1;
+  if (btn !== panelHoverBtn) { panelHoverBtn = btn; if (focusTile) drawPanel(focusTile); }
 }
 
 // ---- Stats ----

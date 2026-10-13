@@ -206,8 +206,8 @@ function inscribedRect(poly, aspect, G = 24) {
   }
   return best;
 }
-function fitTile(tile, aspect) {
-  if (!tile.poly || !aspect) return;
+function computeFit(tile, aspect) {
+  if (!tile.poly || !aspect) return null;
   const xs = tile.poly.map(p => p[0]), ys = tile.poly.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   const bw = x1 - x0, bh = y1 - y0, bx = (x0 + x1) / 2, by = (y0 + y1) / 2;
@@ -239,9 +239,51 @@ function fitTile(tile, aspect) {
       for (const piece of leftoverPieces(tile.poly, rect)) nestFill(piece, rect, 1, { aspect, crop, inc, depth, fallback, minW: Math.max(NEST_MIN_W, NEST_MIN_FRAC * vw) }, regions, mirrors);
     }
   }
+  return { regions, mirrors };
+}
+function fitTile(tile, aspect) {
+  const f = computeFit(tile, aspect); if (!f) return;
+  tile.regions = f.regions; tile.mirrors = f.mirrors;
+  applyTileGeometry(tile);
+}
+// Rebuild the tile mesh from its regions. While a sector wipe is running (tile.wipe) every region is clipped
+// to the sector revealed so far, so the video stays pinned in place and only the window onto it grows.
+function applyTileGeometry(tile) {
+  let { regions, mirrors } = tile;
+  const w = tile.wipe;
+  if (w) {
+    const a1 = w.a1, a0 = a1 - w.span * w.e;
+    const clip = list => list.flatMap(r => clipSector(r.poly, w.pivot, a0, a1).map(poly => ({ ...r, poly })));
+    regions = clip(regions); mirrors = clip(mirrors);
+  }
   tile.mesh.geometry.dispose();
   tile.mesh.geometry = regionsGeometry(regions);
+  tile.mesh.visible = regions.length > 0;
   updateSeams(tile, mirrors);
+}
+// Angular span of a convex polygon as seen from a pivot (both in the same 2D frame): the sector from a1 - span
+// to a1. A pivot inside the polygon means a full turn, ending at 12 o'clock.
+function sectorOf(poly, pv) {
+  const strictlyInside = poly.every((a, i) => { const b = poly[(i + 1) % poly.length]; return (b[0] - a[0]) * (pv[1] - a[1]) - (b[1] - a[1]) * (pv[0] - a[0]) > 1e-4; });
+  if (strictlyInside) return { a1: Math.PI / 2, span: 2 * Math.PI };
+  const pts = poly.filter(p => Math.hypot(p[0] - pv[0], p[1] - pv[1]) > 1e-6);
+  if (!pts.length) return { a1: Math.PI / 2, span: 2 * Math.PI };
+  const ref = Math.atan2(pts[0][1] - pv[1], pts[0][0] - pv[0]);
+  let lo = 0, hi = 0;
+  for (const p of pts) { let d = Math.atan2(p[1] - pv[1], p[0] - pv[0]) - ref; d = Math.atan2(Math.sin(d), Math.cos(d)); lo = Math.min(lo, d); hi = Math.max(hi, d); }
+  return { a1: ref + hi, span: hi - lo };
+}
+// Convex polygon ∩ sector [a0, a1] around pv, as a list of convex pieces (the sector is cut into ≤ 150° wedges).
+function clipSector(poly, pv, a0, a1) {
+  const out = [], n = Math.max(1, Math.ceil((a1 - a0) / (Math.PI * 5 / 6)));
+  if (a1 - a0 <= 1e-6) return out;
+  for (let i = 0; i < n; i++) {
+    const b0 = a0 + (a1 - a0) * i / n, b1 = a0 + (a1 - a0) * (i + 1) / n;
+    let p = clipHalf(poly, q => Math.cos(b0) * (q[1] - pv[1]) - Math.sin(b0) * (q[0] - pv[0]));   // left of the ray at b0
+    p = clipHalf(p, q => Math.sin(b1) * (q[0] - pv[0]) - Math.cos(b1) * (q[1] - pv[1]));          // right of the ray at b1
+    if (p.length >= 3) out.push(p);
+  }
+  return out;
 }
 // Polygon ∩ rectangle, and the (up to four) convex pieces of polygon outside the rectangle.
 function clipToRect(poly, r) {
@@ -579,26 +621,108 @@ async function changeGrid(key, dCols, dRows) {
   // Tear down this surface's tiles
   const old = tiles.filter(t => t.surface === key);
   tiles = tiles.filter(t => t.surface !== key);
-  for (const t of old) {
-    tileOf.delete(t.mesh); if (t.hit) tileOf.delete(t.hit);
-    const mat = t.mesh.material;
-    if (t.video && !tiles.some(x => x.video === t.video)) {
-      killVideo(t.video);
-      if (mat !== placeholder && mat.map) { mat.map.dispose(); mat.dispose(); }
-    }
-  }
-  roomGroup.remove(surfaceGroups[key]);
+  for (const t of old) { cancelTransition(t); tileOf.delete(t.mesh); if (t.hit) tileOf.delete(t.hit); }
+  const prev = ghosts.find(g => g.key === key); if (prev) dropGhost(prev);
+  const oldGroup = surfaceGroups[key];
   const s = surfaces().find(x => x.key === key);
   const made = buildSurface(s);
+  let ghost = null;
+  if (transScale() && old.length) {
+    // the old screens stay, 4 mm behind, until every new screen has swept in
+    oldGroup.translateZ(-0.004);
+    for (const t of old) { t.highlight.visible = false; t.icon.visible = false; }
+    for (const c of surfaceGroups[key].children) if (c.material === bezelMat) c.visible = false;
+    for (const t of made) { t.hit.visible = false; t.mesh.visible = false; }
+    ghost = { key, group: oldGroup, old, tiles: made, armed: false };
+    ghosts.push(ghost);
+  } else {
+    roomGroup.remove(oldGroup);
+    for (const t of old) retire(t.video, t.mesh.material);
+  }
+  const enter = ghost ? wipeIn(s.kind === 'face' ? polyCentroid(s.pts) : [0, 0]) : popIn;
   // Fill the new tiles
   if (library.length) {
     const next = makeDealer(new Set(tiles.map(t => t.label)));
-    for (const t of made) { const e = next(); setTileSource(t, await urlFor(e), e.key); }
+    for (const t of made) { const e = next(); setTileSource(t, await urlFor(e), e.key, enter); }
   } else if (sources.length) {
-    made.forEach((t, i) => { const src = sources[i % sources.length]; setTileSource(t, src.src, src.label); });
+    made.forEach((t, i) => { const src = sources[i % sources.length]; setTileSource(t, src.src, src.label, enter); });
   }
+  if (ghost) ghost.armed = true;
   updateTileCount();
 }
+
+// ---- Transitions ----
+// A tile's incoming video is held back until it has a frame, then "enters": popIn scales a copy of the tile with
+// the new video up over the old one (which keeps playing underneath); wipeIn reveals it in place through a sector
+// sweeping about the surface centre. Old videos and materials are retired only when nothing shows them any more.
+const TRANS_MS = { pop: 350, wipe: 600 };
+const transScale = () => ({ off: 0, quick: 0.5, normal: 1, slow: 2 })[$('transitions').value] ?? 1;
+const easeOut = t => 1 - Math.pow(1 - t, 3);
+const easeInOut = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
+const aspectOf = v => v && v.videoWidth ? v.videoWidth / v.videoHeight : 16 / 9;
+let transitions = [];   // [{ tile, video, mat, done, t0?, dur?, ease?, step? }]; t0 unset = waiting for a frame
+let ghosts = [];        // [{ key, group, old, tiles, armed }]: a surface's previous screens, kept until the new ones are in
+function videoInUse(v) { return tiles.some(t => t.video === v) || transitions.some(a => a.video === v) || ghosts.some(g => g.old.some(t => t.video === v)); }
+function matInUse(m) { return tiles.some(t => t.mesh.material === m) || transitions.some(a => a.mat === m) || ghosts.some(g => g.old.some(t => t.mesh.material === m)) || floatMesh.material === m; }
+function retire(v, m) {
+  if (v && !videoInUse(v)) killVideo(v);
+  if (m && m !== placeholder && m.map && !matInUse(m)) { m.map.dispose(); m.dispose(); }
+}
+// Finish a tile's pending transition right now (its final state is applied).
+function cancelTransition(tile) {
+  const a = tile.trans; if (!a) return;
+  tile.trans = null; transitions = transitions.filter(x => x !== a);
+  a.done();
+}
+// Schedule `finish` (which puts mat/video on the tile) to run after the chosen entrance animation.
+function enterWith(tile, video, mat, finish, enter = popIn) {
+  cancelTransition(tile);
+  const a = { tile, video, mat, done: finish };
+  transitions.push(a); tile.trans = a;
+  if (!transScale() || !tile.poly || focused === tile) { cancelTransition(tile); return; }
+  const start = () => { if (tile.trans !== a) return; enter(a, aspectOf(video)); };
+  if (video.readyState >= 2) start(); else video.addEventListener('loadeddata', start, { once: true });
+}
+function popIn(a, aspect) {
+  const tile = a.tile, f = computeFit(tile, aspect), fin = a.done;
+  const ov = new THREE.Mesh(regionsGeometry(f ? f.regions : []), a.mat);
+  ov.position.copy(tile.mesh.position); ov.position.z += 0.003; ov.renderOrder = 3; ov.scale.setScalar(1e-4);
+  tile.mesh.parent.add(ov);
+  a.t0 = performance.now(); a.dur = TRANS_MS.pop * transScale(); a.ease = easeOut;
+  a.step = e => ov.scale.setScalar(Math.max(1e-4, e));
+  a.done = () => { if (ov.parent) ov.parent.remove(ov); ov.geometry.dispose(); fin(); };
+}
+function wipeIn(pivot) {   // pivot in surface-group coordinates
+  return (a, aspect) => {
+    const tile = a.tile, fin = a.done;
+    tile.mesh.material = a.mat;
+    const pv = [pivot[0] - tile.mesh.position.x, pivot[1] - tile.mesh.position.y];
+    tile.wipe = { pivot: pv, ...sectorOf(tile.poly, pv), e: 0 };
+    fitTile(tile, aspect);
+    a.t0 = performance.now(); a.dur = TRANS_MS.wipe * transScale(); a.ease = easeInOut;
+    a.step = e => { tile.wipe.e = e; applyTileGeometry(tile); };
+    a.done = () => { tile.wipe = null; fin(); };
+  };
+}
+function dropGhost(g) {
+  ghosts = ghosts.filter(x => x !== g);
+  roomGroup.remove(g.group);
+  for (const t of g.old) retire(t.video, t.mesh.material);
+  const ng = surfaceGroups[g.key];
+  if (ng) for (const c of ng.children) if (c.material === bezelMat) c.visible = true;
+  for (const t of g.tiles) if (t.hit) t.hit.visible = true;
+}
+function dropAllTransitions() { for (const g of ghosts.slice()) dropGhost(g); for (const t of tiles) cancelTransition(t); }
+function updateTransitions(now) {
+  for (const a of transitions.slice()) {
+    if (!a.t0) continue;
+    const t = Math.min(1, (now - a.t0) / a.dur);
+    a.step(a.ease(t));
+    if (t >= 1) cancelTransition(a.tile);
+  }
+  for (const g of ghosts.slice()) if (g.armed && g.tiles.every(t => !t.trans)) dropGhost(g);
+}
+$('transitions').addEventListener('change', () => kvSet('transitions', $('transitions').value));
 
 function makeVideo(src) {
   const v = document.createElement('video');
@@ -628,6 +752,7 @@ function killVideo(v) {
 }
 function disposeVideos() {
   unfocus(true);
+  dropAllTransitions();
   for (const v of videoEls) { v.pause(); v.removeAttribute('src'); v.load(); }
   videoEls = [];
   for (const t of tiles) {
@@ -636,16 +761,14 @@ function disposeVideos() {
     t.mesh.material = placeholder; t.video = null; t.label = '';
   }
 }
-function setTileSource(tile, src, label) {
+function setTileSource(tile, src, label, enter = popIn) {
   if (tile.isFloat) { setTileSource(tile.origin, src, label); syncFloat(); return; }
-  const old = tile.video;
-  const v = makeVideo(src);
+  cancelTransition(tile);
+  const old = tile.video, oldMat = tile.mesh.material;
+  const v = makeVideo(src), mat = makeMaterial(v);
   tile.video = v; tile.label = label;
-  const mat = tile.mesh.material;
-  if (mat !== placeholder && mat.map && !tiles.some(t => t !== tile && t.mesh.material === mat)) { mat.map.dispose(); mat.dispose(); }
-  tile.mesh.material = makeMaterial(v);
-  if (old && !tiles.some(t => t.video === old)) killVideo(old);
-  if (tile.poly) v.addEventListener('loadedmetadata', () => { if (tile.video === v) refitTile(tile); }, { once: true });
+  if (tile.poly) v.addEventListener('loadedmetadata', () => { if (tile.video === v && tile.mesh.material === mat) refitTile(tile); }, { once: true });
+  enterWith(tile, v, mat, () => { tile.mesh.material = mat; if (tile.poly) refitTile(tile); retire(old, oldMat); }, enter);
 }
 
 function applySources() {
@@ -905,6 +1028,7 @@ async function hasPermission(r) {
 (async () => {
   likes = (await kvGet('likes')) || [];
   const dm = await kvGet('dealMode'); if (dm) $('dealMode').value = dm;
+  const tr = await kvGet('transitions'); if (tr) $('transitions').value = tr;
   rebuildLikedKeys();
   let saved = await kvGet('roots');
   const legacy = await kvGet('folder');          // single-folder format from before multi-root support
@@ -975,23 +1099,21 @@ function swapPlaces(a, b) {
   if (a.isFloat) a = a.origin; if (b.isFloat) b = b.origin;
   if (!a || !b || a === b) return;
   unfocus(true);
-  [a.video, b.video] = [b.video, a.video];
-  [a.label, b.label] = [b.label, a.label];
-  [a.mesh.material, b.mesh.material] = [b.mesh.material, a.mesh.material];
-  refitTile(a); refitTile(b);
+  cancelTransition(a); cancelTransition(b);
+  const va = a.video, ma = a.mesh.material, la = a.label, vb = b.video, mb = b.mesh.material, lb = b.label;
+  a.video = vb; a.label = lb; b.video = va; b.label = la;
+  const put = (t, v, m) => { if (v) enterWith(t, v, m, () => { t.mesh.material = m; refitTile(t); }); else { t.mesh.material = m; refitTile(t); } };
+  put(a, vb, mb); put(b, va, ma);
 }
 // Put the same video (same decoder, in sync) on another screen
 function copyTo(src, dst) {
   if (src.isFloat) src = src.origin; if (dst.isFloat) dst = dst.origin;
   if (!src || !dst || src === dst || !src.video) return;
   unfocus(true);
-  const old = dst.video, oldMat = dst.mesh.material;
-  dst.video = src.video; dst.label = src.label; dst.mesh.material = src.mesh.material;
-  refitTile(dst);
-  if (old && !tiles.some(t => t.video === old)) {
-    killVideo(old);
-    if (oldMat !== placeholder && oldMat.map) { oldMat.map.dispose(); oldMat.dispose(); }
-  }
+  cancelTransition(src); cancelTransition(dst);
+  const old = dst.video, oldMat = dst.mesh.material, mat = src.mesh.material;
+  dst.video = src.video; dst.label = src.label;
+  enterWith(dst, src.video, mat, () => { dst.mesh.material = mat; refitTile(dst); retire(old, oldMat); });
 }
 
 // ---- Live room scaling (thumbstick up/down); geometry is reused, the group is scaled ----
@@ -1805,6 +1927,7 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1), now = performance.now();
   frames++;
   updateFocusAnim(now);
+  updateTransitions(now);
   if (renderer.xr.isPresenting) for (const h of hands) updateHand(h, dt, now);
   else { updateMouse(); updateDesktopWalk(dt); }
   updateHud();

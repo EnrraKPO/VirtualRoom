@@ -1041,6 +1041,33 @@ async function dismissTile(tile) {
 }
 $('showDismissed').addEventListener('click', () => { const l = $('dismissedList'); l.style.display = l.style.display === 'none' ? '' : 'none'; });
 $('clearDismissed').addEventListener('click', async () => { dismissed = []; rebuildDismissedKeys(); await persistDismissed(); });
+// ---- Bookmarks: a video at a moment (library reference + play time), for reference only so far.
+let bookmarks = [];        // [{ handle, rootName, rel, name, time, at }]
+const fmtTime = t => { t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + `:${String(s).padStart(2, '0')}`; };
+async function persistBookmarks() { await kvSet('bookmarks', bookmarks.map(b => ({ handle: b.handle, rootName: b.rootName, rel: b.rel, name: b.name, time: b.time, at: b.at }))); }
+function renderBookmarks() {
+  $('bookmarkInfo').textContent = bookmarks.length ? `${bookmarks.length}` : 'none';
+  const box = $('bookmarkList'); box.innerHTML = '';
+  bookmarks.forEach(b => {
+    const row = document.createElement('div'); row.className = 'root';
+    row.textContent = `${b.rootName} / ${b.rel} @ ${fmtTime(b.time)} `;
+    const x = document.createElement('button'); x.textContent = '×'; x.title = 'remove bookmark';
+    x.addEventListener('click', async () => { bookmarks = bookmarks.filter(e => e !== b); renderBookmarks(); await persistBookmarks(); });
+    row.appendChild(x); box.appendChild(row);
+  });
+}
+async function bookmarkTile(tile) {
+  const t = tile.isFloat ? tile.origin : tile; if (!t || !t.video) return;
+  const e = library.find(x => x.key === t.label);
+  if (!e) { setStatus('Only library videos can be bookmarked.'); return; }
+  const time = t.video.currentTime || 0;
+  bookmarks.push({ handle: e.handle, rootName: e.rootName, rel: e.rel, name: e.name, time, at: Date.now() });
+  renderBookmarks();
+  await persistBookmarks();
+  setStatus(`Bookmarked ${tileName(t.label)} at ${fmtTime(time)}.`);
+}
+$('showBookmarks').addEventListener('click', () => { const l = $('bookmarkList'); l.style.display = l.style.display === 'none' ? '' : 'none'; });
+$('clearBookmarks').addEventListener('click', async () => { bookmarks = []; renderBookmarks(); await persistBookmarks(); });
 // ---- Override: the held screen's video takes over every screen (pinned ones too). The screens' own videos are
 // paused and remembered; lifting the override (station board) puts them back exactly where they were. Screens
 // changed by hand while the override is up keep what they show. Layout, dealing and history are blocked meanwhile.
@@ -1110,7 +1137,7 @@ async function histStep(tile, dir) {
 }
 $('exportLikes').addEventListener('click', () => {
   const row = l => ({ folder: l.rootName, path: l.rel, name: l.name });
-  const blob = new Blob([JSON.stringify({ likes: likes.map(row), pins: pins.map(row), dismissed: dismissed.map(row) }, null, 2)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ likes: likes.map(row), pins: pins.map(row), dismissed: dismissed.map(row), bookmarks: bookmarks.map(b => ({ ...row(b), time: b.time, at: new Date(b.at).toISOString() })) }, null, 2)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'video-room-likes.json'; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
@@ -1244,6 +1271,7 @@ async function hasPermission(r) {
   likes = (await kvGet('likes')) || [];
   pins = (await kvGet('pins')) || [];
   dismissed = (await kvGet('dismissed')) || [];
+  bookmarks = (await kvGet('bookmarks')) || []; renderBookmarks();
   const dm = await kvGet('dealMode'); if (dm) $('dealMode').value = dm;
   const tr = await kvGet('transitions'); if (tr) $('transitions').value = tr;
   rebuildLikedKeys();
@@ -1542,7 +1570,7 @@ setInterval(() => {
 // ---- Grid/split buttons: a small panel of fixed physical size, tucked into the hovered tile's bottom-right corner.
 const PANEL_DEG = 5, PANEL_MARGIN = 0.02;   // panel height as an angle at the eye (buttons ≈ 3°), margin in metres
 const panelCanvas = document.createElement('canvas');
-panelCanvas.width = 1840; panelCanvas.height = 160;
+panelCanvas.width = 2000; panelCanvas.height = 160;
 const BTN_W = 96, BTN_GAP = 10;
 // Button groups: grid (cols/rows, or split level on a polyhedron face), then zoom −/+ and reset for this screen.
 // Layout: − removes this piece (its siblings re-flow), + adds a sibling, ⊞ splits this piece into two.
@@ -1552,6 +1580,7 @@ const LAYOUT_BUTTONS = [
 const ZOOM_BUTTONS = [{ label: '−', title: 'zoom', dz: -1 }, { label: '+', title: 'zoom', dz: 1 }, { label: '↺', title: 'reset', reset: true }];
 const LIKE_BUTTON = { label: '♥', title: 'like', like: true };
 const PIN_BUTTON = { label: '📌', title: 'pin', pin: true };
+const BOOKMARK_BUTTON = { label: '🔖', title: 'bookmark', bookmark: true, solo: true };
 const DISMISS_BUTTON = { label: '✕', title: 'dismiss (hold)', dismiss: true, hold: true, solo: true };
 const OVERRIDE_BUTTON = { label: '⊙', title: 'override (hold)', override: true, hold: true, solo: true };
 const HIST_BUTTONS = [{ label: '↶', title: 'history', hist: -1 }, { label: '↷', title: 'history', hist: 1 }];
@@ -1569,7 +1598,7 @@ function panelLayout() {
   LAYOUT_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; put(b); });
   x += 150;                                   // room for the zoom value
   ZOOM_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; put(b); });
-  x += 26; put(LIKE_BUTTON); put(PIN_BUTTON);
+  x += 26; put(LIKE_BUTTON); put(PIN_BUTTON); x += 26; put(BOOKMARK_BUTTON);
   return out;
 }
 function setPanelHold(idx, frac) {
@@ -1604,6 +1633,7 @@ function pressPanelButton(tile, idx) {
   if (b.pin) { togglePin(t).then(() => drawPanel(tile)); return; }
   if (b.dismiss) { dismissTile(tile); return; }
   if (b.override) { startOverride(tile); drawPanel(tile); return; }
+  if (b.bookmark) { bookmarkTile(tile); return; }
   if (b.hist) { histStep(tile, b.hist); return; }
   if (b.dz) {
     if (!t.fit) return;

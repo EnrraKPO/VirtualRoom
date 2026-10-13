@@ -212,23 +212,31 @@ function fitTile(tile, aspect) {
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   const bw = x1 - x0, bh = y1 - y0, bx = (x0 + x1) / 2, by = (y0 + y1) / 2;
   const cover = Math.max(bw, bh * aspect);
-  const ins = inscribedRect(tile.poly, aspect);           // 0 % crop: the whole video is on the face
+  if (!tile.insCache || tile.insCache.aspect !== aspect) tile.insCache = { aspect, ins: inscribedRect(tile.poly, aspect) };
+  const ins = tile.insCache.ins;                          // zoom 1: the whole video is on the face
+  const coverRatio = Math.max(1, cover / ins.w);          // zoom at which the face is fully covered
   const crop = Math.max(0, Math.min(1, (+$('maxCrop').value || 0) / 100));
-  const vw = crop >= 1 ? cover : Math.min(cover, ins.w / (1 - crop)), vh = vw / aspect;
-  // slide the centre from the inscribed rectangle's towards the bounding box's as the video grows
-  const t = cover > ins.w ? (vw - ins.w) / (cover - ins.w) : 1;
-  const cx = ins.cx + (bx - ins.cx) * t, cy = ins.cy + (by - ins.cy) * t;
-  tile.fit = { vw, vh, cx, cy };
+  const zoomDefault = crop >= 1 ? coverRatio : Math.min(coverRatio, 1 / (1 - crop));
+  const view = tile.view;                                 // { zoom|null, dx, dy }: a screen the user has adjusted
+  const zoom = view && view.zoom != null ? view.zoom : zoomDefault;
+  const vw = ins.w * zoom, vh = vw / aspect;
+  // slide the centre from the inscribed rectangle's towards the bounding box's as the video grows, add the pan,
+  // and never let a video edge pass the face centre
+  const t = coverRatio > 1 ? Math.max(0, Math.min(1, (zoom - 1) / (coverRatio - 1))) : 1;
+  let cx = ins.cx + (bx - ins.cx) * t + (view ? view.dx * vw : 0), cy = ins.cy + (by - ins.cy) * t + (view ? view.dy * vh : 0);
+  cx = Math.max(bx - vw / 2, Math.min(bx + vw / 2, cx)); cy = Math.max(by - vh / 2, Math.min(by + vh / 2, cy));
+  tile.fit = { vw, vh, cx, cy, coverRatio, zoomDefault };
   const blank = $('fillMode').value === 'blank';
   let pts = tile.poly;
-  if (blank && vw < cover - 1e-6) {
+  if (blank) {
     pts = clipHalf(pts, p => p[0] - (cx - vw / 2));
     pts = clipHalf(pts, p => (cx + vw / 2) - p[0]);
     pts = clipHalf(pts, p => p[1] - (cy - vh / 2));
     pts = clipHalf(pts, p => (cy + vh / 2) - p[1]);
     if (pts.length < 3) pts = tile.poly;
   }
-  if (pts !== tile.shapePts) {
+  const same = tile.shapePts && pts.length === tile.shapePts.length && pts.every((q, i) => Math.abs(q[0] - tile.shapePts[i][0]) < 1e-7 && Math.abs(q[1] - tile.shapePts[i][1]) < 1e-7);
+  if (!same) {
     tile.mesh.geometry.dispose();
     tile.mesh.geometry = shapeGeometry(pts);
     tile.shapePts = pts;
@@ -240,6 +248,7 @@ function fitTile(tile, aspect) {
 const fitPolyUV = fitTile;
 function refitTile(t) { if (t.poly) fitTile(t, t.video && t.video.videoWidth ? t.video.videoWidth / t.video.videoHeight : 16 / 9); }
 function refitAll() { for (const t of tiles) refitTile(t); }
+function resetView(t) { if (t.isFloat) t = t.origin; if (!t) return; t.view = null; refitTile(t); }
 
 // Interaction tuning
 const SCRUB_MAX_SPEED = 30;     // seconds of video per second at full stick deflection
@@ -377,12 +386,16 @@ function buildSurface(s) {
                     sh / 2 - bezel - th / 2 - r * (th + bezel), 0);
     g.add(m);
     const outline = [[-tw / 2, -th / 2], [tw / 2, -th / 2], [tw / 2, th / 2], [-tw / 2, th / 2]];
+    const hit = new THREE.Mesh(new THREE.PlaneGeometry(tw, th), placeholder);   // full tile under the (possibly clipped) video
+    hit.position.copy(m.position); hit.position.z = -0.001;
+    g.add(hit);
     const hl = makeRing(outline, RING_W);
     hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
     g.add(hl);
     const icon = makeIcon(); icon.position.copy(m.position); g.add(icon);
-    const tile = { mesh: m, w: tw, h: th, video: null, label: '', highlight: hl, icon, surface: s.key, outline };
-    tiles.push(tile); tileOf.set(m, tile); made.push(tile);
+    const tile = { mesh: m, w: tw, h: th, video: null, label: '', highlight: hl, icon, surface: s.key, outline, poly: outline, hit, shapePts: null };
+    fitTile(tile, 16 / 9);
+    tiles.push(tile); tileOf.set(m, tile); tileOf.set(hit, tile); made.push(tile);
   }
   return made;
 }
@@ -1200,6 +1213,10 @@ function updateHand(hand, dt, now) {
   else { hand.dot.visible = false; hand.beam.scale.z = 10; }
   if (tile && tile !== hand.hovered) setFocus(tile);
   hand.hovered = tile;
+  // Beam point in the tile's own plane (metres from the tile centre), for in-screen drags
+  let lx = 0, ly = 0;
+  if (tile && !tile.isFloat && !onPanel) { _lp.copy(hit.point); tile.mesh.parent.worldToLocal(_lp); lx = _lp.x - tile.mesh.position.x; ly = _lp.y - tile.mesh.position.y; }
+  if (hand.drag) adjustDrag(hand, tile, lx, ly);
   const btn = onPanel ? panelButtonAt(hit.uv) : -1;
   if (btn !== panelHoverBtn) { panelHoverBtn = btn; if (focusTile) drawPanel(focusTile); }
 
@@ -1246,13 +1263,14 @@ function updateHand(hand, dt, now) {
   if (Math.max(Math.abs(ax), Math.abs(ay)) < 0.3) hand.snapped = false;
   if (!trigger && p.trigger) hand.turning = false;
   if (grip && stick && !p.stick) recentre();                            // grip + stick click = back to centre
+  else if (hand.drag && hand.drag.kind === 'swap' && stick && !p.stick) { resetView(hand.drag.from); hand.drag.adjusted = true; }   // stick click while trigger-dragging = reset pan/zoom
   else if (tile && stick && !p.stick) jumpRandom(tile);
   if (!grip && p.grip) hand.walking = false;
 
   // Press on a screen starts a potential drag; release decides: same screen = tap action,
   // different screen = two-screen action (trigger drag = swap places, grip drag = copy).
-  if (trigger && !p.trigger && tile) startDrag(hand, 'swap', tile, now);
-  if (grip && !p.grip && tile) startDrag(hand, 'copy', tile, now);
+  if (trigger && !p.trigger && tile) startDrag(hand, 'swap', tile, now, lx, ly);
+  if (grip && !p.grip && tile) startDrag(hand, 'copy', tile, now, lx, ly);
   if (!trigger && p.trigger && hand.drag && hand.drag.kind === 'swap') endDrag(hand, tile, now);
   if (!grip && p.grip && hand.drag && hand.drag.kind === 'copy') endDrag(hand, tile, now);
 
@@ -1351,15 +1369,32 @@ function cancelDrag(hand) {
 }
 
 const DRAG_COLORS = { swap: 0xffa040, copy: 0x4aff8a, idle: 0x4aa8ff };
-function startDrag(hand, kind, tile, now) {
-  hand.drag = { kind, from: tile, t0: now };
+const _lp = new THREE.Vector3();
+function startDrag(hand, kind, tile, now, lx = 0, ly = 0) {
+  hand.drag = { kind, from: tile, t0: now, x0: lx, y0: ly, view0: tile.view ? { ...tile.view } : null, adjusted: false, left: false };
   hand.beam.material.color.setHex(DRAG_COLORS[kind]);
   if (kind === 'copy') hand.gripDownAt = now;
 }
+// While a drag stays on the screen it started on, beam movement pans (trigger) or zooms (grip) that screen's
+// video. Leaving the screen reverts the adjustment and the drag becomes the usual swap/copy gesture.
+function adjustDrag(hand, tile, lx, ly) {
+  const d = hand.drag, f = d.from;
+  if (f.isFloat || !f.fit) return;
+  if (tile !== f) { if (d.adjusted) { f.view = d.view0; refitTile(f); d.adjusted = false; } d.left = true; return; }
+  if (d.left) { d.x0 = lx; d.y0 = ly; d.left = false; }
+  const dx = lx - d.x0, dy = ly - d.y0;
+  if (!d.adjusted && Math.hypot(dx, dy) < 0.05 * Math.min(f.w, f.h)) return;
+  d.adjusted = true;
+  const v0 = d.view0 || { zoom: null, dx: 0, dy: 0 }, fit = f.fit;
+  if (d.kind === 'swap') f.view = { zoom: v0.zoom, dx: v0.dx + dx / fit.vw, dy: v0.dy + dy / fit.vh };
+  else { const z0 = v0.zoom != null ? v0.zoom : fit.zoomDefault; f.view = { zoom: Math.max(1, Math.min(2 * fit.coverRatio, z0 * Math.pow(2, dy / f.h))), dx: v0.dx, dy: v0.dy }; }
+  refitTile(f);
+}
 function endDrag(hand, target, now) {
-  const { kind, from, t0 } = hand.drag;
+  const { kind, from, t0, adjusted } = hand.drag;
   hand.drag = null;
   hand.beam.material.color.setHex(DRAG_COLORS.idle);
+  if (adjusted) return;   // the press was a pan/zoom (or a reset): no tap or two-screen action
   if (target && target !== from) {
     if (kind === 'swap') swapPlaces(from, target); else copyTo(from, target);
   } else if (target === from) {

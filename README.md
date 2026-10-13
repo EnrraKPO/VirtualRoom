@@ -25,7 +25,7 @@ presence and whether an `immersive-vr` session is supported.
 
 | Section | What it does |
 |---|---|
-| Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere, or an N-trapezohedron with 2N kite faces, N = 3–16, odd N for a flat ceiling) standing on one face, sized by the width across (twice the floor face's inradius; height follows). A prism's walls get the normal wall grid, its N-gon floor and ceiling carry the largest square grid that fits. A polyhedron's faces are each one screen showing the video centre-cropped to the face shape; "Split each face" (level 1–4) cuts triangles into L² screens and pentagons into a fan of 5 × (L−1)². **Max crop** caps how much of the video's width or height may be cut off (0 = never crop, 100 = always cover the face); **Fill the rest with** blank (the screen is clipped to the video, the dark face shows around it) or mirrored video (kaleidoscope-style repeats). Both apply live. "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. **Turning**: smooth (speed follows stick deflection) or snap (15° per stick flick), for both turning and tilting. |
+| Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere, or an N-trapezohedron with 2N kite faces, N = 3–16, odd N for a flat ceiling) standing on one face, sized by the width across (twice the floor face's inradius; height follows). A prism's walls get the normal wall grid, its N-gon floor and ceiling carry the largest square grid that fits. A polyhedron's faces are each one screen showing the video centre-cropped to the face shape; "Split each face" (level 1–4) cuts triangles into L² screens and pentagons into a fan of 5 × (L−1)². **Max crop** caps how much of the video's width or height may be cut off (0 = never crop, 100 = always cover the face); **Fill the rest with** blank (the screen is clipped to the video, the dark face shows around it) or mirrored video (kaleidoscope-style repeats). Both apply live. Rectangular screens use the same fit, so videos are cropped rather than stretched. "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. **Turning**: smooth (speed follows stick deflection) or snap (15° per stick flick), for both turning and tilting. |
 | Screens per surface | Starting grid (cols × rows) for walls and for floor/ceiling. Optional bezels. **Apply layout** rebuilds everything and resets per-wall grids and room scale. |
 | Videos | **Add folder…** adds a folder to the library (File System Access API); each folder row has a **subfolders** checkbox (on by default) and an × to remove it. **Add files…** adds one or more individual videos as a row. Rows persist across launches in IndexedDB; after a restart a row says "click to reopen" until you click it to re-grant read access. **Shuffle** redeals from the combined pool; **Clear** removes every row. "Use sample video" shows the sample until the next shuffle or layout change. Also: "Start each video at a random point", "Auto-jump every N s", "Separate decoder per screen" (stress test for non-library mode), "Mute all". |
 | Stats | render fps, decoder count, audible count, dropped video frames %, stalled/paused. |
@@ -59,6 +59,18 @@ the sound icon even when not pointed at.
 | Trigger | swap the two screens' videos |
 | Grip | copy the video to the target (shares the decoder, stays in sync) |
 
+**Drag inside the same screen** (press, move the beam, release on the same screen)
+
+| Button | Action |
+|---|---|
+| Trigger | pan the video inside the screen (it follows the beam) |
+| Grip | zoom: beam up = in, down = out, centred on the screen |
+| Stick click while trigger-dragging | reset that screen to the crop setting |
+
+A screen you have adjusted keeps its own zoom and offset (the crop setting no longer applies to
+it) until you reset it or rebuild its surface. Leaving the screen mid-drag reverts the adjustment
+and the drag becomes a normal swap / copy.
+
 **Stick**
 
 | Hold | Stick | Action |
@@ -85,6 +97,9 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   `kind: 'face'`, a local 2D polygon `pts` and a `quat`. `wallPlanes()` gives walls/faces as outward
   normals + distances from the room centre `(0, polyCentreY, 0)` and drives both `clampRig()` (sloped
   faces push the head back horizontally) and `focusDistance()`.
+- **Per-screen view**: `tile.view = { zoom, dx, dy }` (null = follow the crop setting). `zoom` is relative to the
+  inscribed video size (1 = whole video visible, `fit.coverRatio` = face covered, max 2× that); `dx/dy` are
+  offsets in video widths/heights. `adjustDrag()` edits it live during an in-screen drag; `resetView()` clears it.
 - **Polyhedra**: `polyhedron(kind, across, n)` builds vertices (`polyVertices`; the trapezohedron is two apexes
   plus a zigzag ring, apex height solved so kites are planar and all vertices share one sphere), takes the convex hull by
   brute force (`hullFaces`, fine for ≤ 42 vertices), rotates face 0 down to be the floor, scales so the

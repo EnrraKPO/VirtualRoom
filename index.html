@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Video Room</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #000; color: #eee; font-family: system-ui, sans-serif; overflow: hidden; }
+    #ui { position: fixed; top: 12px; left: 12px; z-index: 10; background: rgba(0,0,0,.75); padding: 12px 14px; border-radius: 8px; width: 340px; font-size: 13px; }
+    #ui h1 { font-size: 16px; margin: 0 0 8px; }
+    #ui fieldset { border: 1px solid #444; border-radius: 6px; margin: 8px 0; padding: 6px 10px; }
+    #ui legend { font-size: 12px; color: #aaa; padding: 0 4px; }
+    #ui label { display: block; margin: 5px 0; }
+    #ui select, #ui input, #ui button { font: inherit; }
+    #ui input[type=number] { width: 3.5em; }
+    #ui button { padding: 4px 10px; margin: 3px 3px 3px 0; cursor: pointer; }
+    .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    #status, #diag, #stats { margin-top: 6px; opacity: .85; font-size: 12px; white-space: pre-line; }
+    #stats { font-family: ui-monospace, monospace; }
+  </style>
+</head>
+<body>
+  <div id="ui">
+    <h1>Video Room</h1>
+
+    <fieldset>
+      <legend>Room size (m)</legend>
+      <div class="row">
+        W <input type="number" id="roomW" min="2" max="30" step="0.5" value="5" />
+        D <input type="number" id="roomD" min="2" max="30" step="0.5" value="5" />
+        H <input type="number" id="roomH" min="2" max="15" step="0.5" value="3" />
+      </div>
+      <div class="row">
+        Focus screen fills <input type="number" id="focusFov" min="20" max="140" step="5" value="80" />° of view
+        <label><input type="checkbox" id="dimOthers" checked /> Dim others</label>
+      </div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Screens per surface</legend>
+      <div class="row">
+        Walls: <input type="number" id="wallCols" min="1" max="8" value="1" /> x
+        <input type="number" id="wallRows" min="1" max="8" value="1" />
+      </div>
+      <div class="row">
+        Floor/ceiling: <input type="number" id="flatCols" min="1" max="8" value="1" /> x
+        <input type="number" id="flatRows" min="1" max="8" value="1" />
+      </div>
+      <div class="row">
+        <label><input type="checkbox" id="bezel" checked /> Bezels between screens</label>
+        <button id="apply">Apply layout</button>
+      </div>
+      <div id="tileCount"></div>
+    </fieldset>
+
+    <fieldset>
+      <legend>Videos</legend>
+      <div class="row">
+        <button id="pickFolder">Choose folder…</button>
+        <button id="shuffle">Shuffle</button>
+        <span id="libInfo"></span>
+      </div>
+      <label>Or pick files
+        <input type="file" id="files" accept="video/*" multiple /></label>
+      <div class="row">
+        <button id="useSample">Use sample video</button>
+        <button id="clear">Clear</button>
+      </div>
+      <label><input type="checkbox" id="randomStart" checked /> Start each video at a random point</label>
+      <label>Auto-jump to a random point every <input type="number" id="autoJump" min="0" max="3600" step="5" value="0" /> s (0 = off)</label>
+      <label><input type="checkbox" id="separate" /> Separate decoder per screen (stress test)</label>
+      <label><input type="checkbox" id="mute" checked /> Mute all</label>
+    </fieldset>
+
+    <fieldset>
+      <legend>Controls (point at a screen)</legend>
+      <div style="font-size:12px;line-height:1.5">
+        <b>VR tap:</b> trigger = random swap · grip = solo audio (hold ½s = add) · A/X = pause · B/Y = focus · stick click = random jump<br>
+        <b>VR drag to another screen:</b> trigger = swap places · grip = copy video<br>
+        <b>Strip buttons</b> (bottom of the pointed-at screen): − / + columns and rows on that wall<br>
+        <b>VR stick:</b> ◀▶ = scrub · ▲▼ = room bigger / smaller · hold grip + stick = walk · grip + trigger + stick ▲▼ = fly up / down · trigger + stick ◀▶ = turn · grip + stick click = back to centre<br>
+        <b>Mouse:</b> click = random swap · right-click = audio (shift = add) · wheel / ◀▶ = scrub · space = pause · M = audio · F = focus · R = random jump · X,X = swap places · C,C = copy · + / − = room size · WASD = walk · Q / E = down / up
+      </div>
+    </fieldset>
+
+    <div id="status">Set a layout, then pick videos, then Enter VR.</div>
+    <div id="stats"></div>
+    <div id="diag"></div>
+  </div>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

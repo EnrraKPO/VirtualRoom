@@ -180,14 +180,45 @@ function clipHalf(poly, f) {
 // bounding box and grown towards covering it, but never so far that more than "max crop" % of its width or
 // height is cut off. Whatever the rectangle does not reach is either left blank (the mesh is clipped to the
 // rectangle, the dark backing shows) or filled with mirrored repeats of the video.
+// Is p inside the convex counter-clockwise polygon?
+function insidePoly(poly, p) {
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length];
+    if ((b[0] - a[0]) * (p[1] - a[1]) - (b[1] - a[1]) * (p[0] - a[0]) < -1e-9) return false;
+  }
+  return true;
+}
+// Largest rectangle of the given aspect that fits entirely inside the polygon: grid of centres, bisection on size.
+function inscribedRect(poly, aspect) {
+  let sa = 0; for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length]; sa += a[0] * b[1] - b[0] * a[1]; }
+  if (sa < 0) poly = poly.slice().reverse();   // insidePoly wants counter-clockwise
+  const xs = poly.map(p => p[0]), ys = poly.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const fits = (cx, cy, w) => { const h = w / aspect; return insidePoly(poly, [cx - w / 2, cy - h / 2]) && insidePoly(poly, [cx + w / 2, cy - h / 2]) && insidePoly(poly, [cx + w / 2, cy + h / 2]) && insidePoly(poly, [cx - w / 2, cy + h / 2]); };
+  let best = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: 0 };
+  const G = 24, wMax = Math.max(x1 - x0, (y1 - y0) * aspect);
+  for (let i = 1; i < G; i++) for (let j = 1; j < G; j++) {
+    const cx = x0 + (x1 - x0) * i / G, cy = y0 + (y1 - y0) * j / G;
+    if (!insidePoly(poly, [cx, cy]) || !fits(cx, cy, best.w)) continue;
+    let lo = best.w, hi = wMax;
+    for (let k = 0; k < 18; k++) { const mid = (lo + hi) / 2; if (fits(cx, cy, mid)) lo = mid; else hi = mid; }
+    if (lo > best.w) best = { cx, cy, w: lo };
+  }
+  return best;
+}
 function fitTile(tile, aspect) {
   if (!tile.poly || !aspect) return;
   const xs = tile.poly.map(p => p[0]), ys = tile.poly.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
-  const bw = x1 - x0, bh = y1 - y0, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
-  const contain = Math.min(bw, bh * aspect), cover = Math.max(bw, bh * aspect);
+  const bw = x1 - x0, bh = y1 - y0, bx = (x0 + x1) / 2, by = (y0 + y1) / 2;
+  const cover = Math.max(bw, bh * aspect);
+  const ins = inscribedRect(tile.poly, aspect);           // 0 % crop: the whole video is on the face
   const crop = Math.max(0, Math.min(1, (+$('maxCrop').value || 0) / 100));
-  const vw = crop >= 1 ? cover : Math.min(cover, contain / (1 - crop)), vh = vw / aspect;
+  const vw = crop >= 1 ? cover : Math.min(cover, ins.w / (1 - crop)), vh = vw / aspect;
+  // slide the centre from the inscribed rectangle's towards the bounding box's as the video grows
+  const t = cover > ins.w ? (vw - ins.w) / (cover - ins.w) : 1;
+  const cx = ins.cx + (bx - ins.cx) * t, cy = ins.cy + (by - ins.cy) * t;
+  tile.fit = { vw, vh, cx, cy };
   const blank = $('fillMode').value === 'blank';
   let pts = tile.poly;
   if (blank && vw < cover - 1e-6) {

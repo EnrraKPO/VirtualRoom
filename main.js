@@ -1112,7 +1112,7 @@ $('clearBookmarks').addEventListener('click', async () => { bookmarks = []; rend
 // paused and remembered; lifting the override (station board) puts them back exactly where they were. Screens
 // changed by hand while the override is up keep what they show. Layout, dealing and history are blocked meanwhile.
 let override = null;   // { video, mat, label, saved: Map(tile -> { video, mat, label, view, wasPlaying }) }
-const overrideBlocks = () => { if (override) setStatus('Lift the override first (station board).'); return !!override; };
+const overrideBlocks = () => { if (override) setStatus('Lift the override first (hold ⊙ on any screen).'); return !!override; };
 function startOverride(tile) {
   const t = tile.isFloat ? tile.origin : tile; if (!t || !t.video || override) return;
   unfocus(true);
@@ -1622,7 +1622,7 @@ const LIKE_BUTTON = { label: '♥', title: 'like', like: true };
 const PIN_BUTTON = { label: '📌', title: 'pin', pin: true };
 const BOOKMARK_BUTTON = { label: '🔖', title: 'bookmark', bookmark: true, solo: true };
 const DISMISS_BUTTON = { label: '✕', title: 'dismiss (hold)', dismiss: true, hold: true, solo: true };
-const OVERRIDE_BUTTON = { label: '⊙', title: 'override (hold)', override: true, hold: true, solo: true };
+const OVERRIDE_BUTTON = { label: '⊙', title: 'override (hold)', override: true, hold: true, solo: true };   // hold again to lift
 const HIST_BUTTONS = [{ label: '↶', title: 'history', hist: -1 }, { label: '↷', title: 'history', hist: 1 }];
 const HOLD_MS = 700;         // hold the trigger (or mouse button) this long on a hold button
 let panelHold = null;        // { idx, frac } while a hold button is being held
@@ -1672,7 +1672,7 @@ function pressPanelButton(tile, idx) {
   if (b.like) { toggleLike(t).then(() => drawPanel(tile)); return; }
   if (b.pin) { togglePin(t).then(() => drawPanel(tile)); return; }
   if (b.dismiss) { dismissTile(tile); return; }
-  if (b.override) { startOverride(tile); drawPanel(tile); return; }
+  if (b.override) { if (override) liftOverride(); else startOverride(tile); drawPanel(tile); return; }
   if (b.bookmark) { bookmarkTile(tile); return; }
   if (b.hist) { histStep(tile, b.hist); return; }
   if (b.dz) {
@@ -1711,7 +1711,7 @@ function drawPanel(tile) {
   let labelled = new Set();
   const liked = src && isLikedKey(src.label), pinned = src && isPinnedKey(src.label);
   panelBtns.forEach((b, i) => {
-    c.fillStyle = i === panelHoverBtn ? '#4aa8ff' : pinned && b.pin ? '#5a4a10' : '#2e2e2e';
+    c.fillStyle = i === panelHoverBtn ? '#4aa8ff' : pinned && b.pin ? '#5a4a10' : override && b.override ? '#5a4a10' : '#2e2e2e';
     c.beginPath(); c.roundRect(b.x0, 44, BTN_W, 88, 14); c.fill();
     if (panelHold && panelHold.idx === i) {   // hold progress fills the button from the left
       c.save(); c.beginPath(); c.roundRect(b.x0, 44, BTN_W, 88, 14); c.clip();
@@ -1719,7 +1719,7 @@ function drawPanel(tile) {
     }
     const off = (b.act === 'remove' && (!(node && node.parent) || pinned))   // the only piece of a surface, or a pinned one, cannot be removed
              || (b.hist && (!src || histTarget(src, b.hist) < 0))
-             || (b.override && (!!override || !src || !src.video));
+             || (b.override && !override && (!src || !src.video));
     c.fillStyle = b.like ? (liked ? '#ff4a6a' : '#777') : off ? '#666' : '#fff'; c.font = 'bold 56px system-ui, sans-serif';
     c.globalAlpha = b.pin && !pinned ? 0.35 : 1;
     c.fillText(b.label, b.x0 + BTN_W / 2, 88);
@@ -1785,7 +1785,7 @@ function placePanel(tile) {
 }
 // ---- Station board: a small table that follows you at waist height, below the straight-ahead view.
 // Faint until you look at it or point at it. Its slots are drag sources: drag "Deploy favourite" onto a screen.
-const BOARD_W = 0.66, BOARD_H = 0.25, BOARD_AHEAD = 0.55, BOARD_DROP = 0.9, BOARD_TILT = THREE.MathUtils.degToRad(-55);
+const BOARD_W = 0.5, BOARD_H = 0.25, BOARD_AHEAD = 0.55, BOARD_DROP = 0.9, BOARD_TILT = THREE.MathUtils.degToRad(-55);
 const board = new THREE.Group();
 scene.add(board);
 const boardMat = new THREE.MeshBasicMaterial({ color: 0x101418, transparent: true, opacity: 0.3, depthTest: false, depthWrite: false });
@@ -1821,16 +1821,6 @@ const shuffleSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTes
 const shuffleSlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), shuffleSlotMat);
 shuffleSlot.position.set(-BOARD_W / 2 + 0.24, 0, 0.002); shuffleSlot.renderOrder = 26; shuffleSlot.userData.slot = 'shuffle';
 board.add(shuffleSlot);
-const liftSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, map: slotTexture(c => {
-  c.strokeStyle = '#ffd24a'; c.lineWidth = 14; c.lineCap = 'round';   // ring with a lifted bar
-  c.beginPath(); c.arc(128, 110, 50, 0, Math.PI * 2); c.stroke();
-  c.beginPath(); c.moveTo(70, 40); c.lineTo(186, 40); c.stroke();
-  c.fillStyle = '#fff'; c.font = 'bold 30px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
-  c.fillText('lift', 128, 225);
-}) });
-const liftSlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), liftSlotMat);
-liftSlot.position.set(-BOARD_W / 2 + 0.39, 0, 0.002); liftSlot.renderOrder = 26; liftSlot.userData.slot = 'lift';
-board.add(liftSlot);
 const likesSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, map: slotTexture(c => {
   c.fillStyle = '#ff4a6a'; c.beginPath();                                        // heart with shuffle arrows across it
   c.moveTo(128, 180); c.bezierCurveTo(50, 125, 70, 55, 128, 95); c.bezierCurveTo(186, 55, 206, 125, 128, 180); c.fill();
@@ -1841,7 +1831,7 @@ const likesSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest:
   c.fillText('shuffle ♥ (hold)', 128, 225);
 }) });
 const likesSlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), likesSlotMat);
-likesSlot.position.set(-BOARD_W / 2 + 0.54, 0, 0.002); likesSlot.renderOrder = 26; likesSlot.userData.slot = 'likes'; likesSlot.userData.hold = true;
+likesSlot.position.set(-BOARD_W / 2 + 0.39, 0, 0.002); likesSlot.renderOrder = 26; likesSlot.userData.slot = 'likes'; likesSlot.userData.hold = true;
 board.add(likesSlot);
 const slotBarMat = new THREE.MeshBasicMaterial({ color: 0xd04040, transparent: true, depthTest: false, depthWrite: false });
 const slotBar = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.014), slotBarMat);   // hold progress under a hold slot
@@ -1852,10 +1842,10 @@ function setSlotHold(mesh, frac) {   // progress bar under the slot being held (
   slotBar.visible = true; slotBar.scale.x = Math.max(0.001, Math.min(1, frac));
   slotBar.position.set(mesh.position.x - 0.06 + 0.06 * slotBar.scale.x, mesh.position.y - 0.075, 0.003);
 }
-const boardSlots = [deploySlot, shuffleSlot, liftSlot, likesSlot];
+const boardSlots = [deploySlot, shuffleSlot, likesSlot];
 const slotMesh = kind => boardSlots.find(m => m.userData.slot === kind);
 const slotNeedsHold = kind => !!(slotMesh(kind) && slotMesh(kind).userData.hold);
-function tapSlot(kind) { if (kind === 'shuffle') dealRandom(); else if (kind === 'lift') liftOverride(); else if (kind === 'likes') shuffleLikes(); }
+function tapSlot(kind) { if (kind === 'shuffle') dealRandom(); else if (kind === 'likes') shuffleLikes(); }
 const BOARD_SLOT = { isBoard: true, label: '' };   // drag source sentinel for the deploy slot
 const _bf = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bm = new THREE.Matrix4();
 let boardYaw = null, boardHot = false;
@@ -1880,7 +1870,6 @@ function updateBoard(dt) {
   const target = gazing || boardHot ? 1 : 0.3;
   boardMat.opacity += (target - boardMat.opacity) * Math.min(1, dt * 8);
   deploySlotMat.opacity = shuffleSlotMat.opacity = likesSlotMat.opacity = boardMat.opacity;
-  liftSlotMat.opacity = boardMat.opacity * (override ? 1 : 0.35);   // only lit while an override is up
 }
 
 // Per-frame HUD: contour progress on the hovered screen, floating sound icons on hovered or audible screens.
@@ -2040,7 +2029,7 @@ function updateHand(hand, dt, now) {
   // different screen = two-screen action (trigger drag = swap places, grip drag = copy).
   if (trigger && !p.trigger && tile) startDrag(hand, 'swap', tile, now, lx, ly, hit);
   if (trigger && !p.trigger && slot === 'liked') startDrag(hand, 'liked', BOARD_SLOT, now);
-  if (trigger && !p.trigger && (slot === 'shuffle' || slot === 'lift')) hand.tapSlot = slot;   // tap (press + release on the same slot)
+  if (trigger && !p.trigger && slot === 'shuffle') hand.tapSlot = slot;   // tap (press + release on the same slot)
   if (!trigger && p.trigger && hand.tapSlot) { const k = hand.tapSlot; hand.tapSlot = null; if (slot === k) tapSlot(k); }
   if (trigger && !p.trigger && slot && slotNeedsHold(slot)) hand.holdSlot = { kind: slot, t0: now };   // hold slots fire after HOLD_MS
   if (hand.holdSlot) {

@@ -103,7 +103,8 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   filename for display. Object URLs are created lazily in `urlFor()` and survive rescans.
   `persistRoots()` stores handles in IndexedDB; the legacy single `folder` key is migrated.
 - **Focus**: `floatGroup` (unit plane scaled to size) animates from the tile's world pose to
-  a pose in front of the head. `floatTile` is a pseudo-tile with `isFloat` + `origin`, so all
+  a pose along the eye→screen line (pitch limited to ±65°, kept clear of walls, floor and ceiling),
+  so it opens inside your view whichever surface the screen came from. `floatTile` is a pseudo-tile with `isFloat` + `origin`, so all
   per-tile actions work on it. Size = `focusSize(dist, aspect)`, distance = `focusDistance()`.
 - **Viewer rig**: `rig` group contains the camera and both controllers. Walking/flying move
   it, turning rotates it around the head. `clampRig()` keeps the head inside the room.

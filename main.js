@@ -760,22 +760,36 @@ function applyDim(on) {
   for (const t of tiles) if (t !== focused && t.mesh.material !== placeholder && t.mesh.material !== dimMat)
     t.mesh.material.color.setScalar(dim ? 0.25 : 1);
 }
+const _toTile = new THREE.Vector3();
 function focusTarget() {
-  // In front of the viewer, at eye height, facing them. Uses the live XR head pose when presenting.
+  // Along the line from the eye to the screen being focused, so the panel opens where you were looking
+  // (works for floor, ceiling and sloped faces too). Uses the live XR head pose when presenting.
   const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
   cam.getWorldPosition(_eye);
-  cam.getWorldDirection(_fwd); _fwd.y = 0;
-  if (_fwd.lengthSq() < 1e-4) _fwd.set(0, 0, -1); else _fwd.normalize();
-  // Distance: a comfortable fixed distance, but never past the nearest wall in that direction.
+  focused.mesh.getWorldPosition(_toTile);
+  _fwd.subVectors(_toTile, _eye);
+  if (_fwd.lengthSq() < 1e-4) { cam.getWorldDirection(_fwd); }
+  _fwd.normalize();
+  // Limit the pitch so the panel never sits straight above or below you.
+  const maxPitch = THREE.MathUtils.degToRad(65);
+  let pitch = Math.asin(THREE.MathUtils.clamp(_fwd.y, -1, 1));
+  pitch = THREE.MathUtils.clamp(pitch, -maxPitch, maxPitch);
+  const hz = Math.hypot(_fwd.x, _fwd.z);
+  if (hz < 1e-4) { cam.getWorldDirection(_toTile); _toTile.y = 0; if (_toTile.lengthSq() < 1e-4) _toTile.set(0, 0, -1); _toTile.normalize(); }
+  else _toTile.set(_fwd.x / hz, 0, _fwd.z / hz);
+  _fwd.set(_toTile.x * Math.cos(pitch), Math.sin(pitch), _toTile.z * Math.cos(pitch));
+  // Distance: a comfortable fixed distance, but never past the nearest wall, floor or ceiling in that direction.
   const dist = focusDistance(_eye, _fwd);
   const v = focused.video;
   const aspect = v && v.videoWidth ? v.videoWidth / v.videoHeight : focused.w / focused.h;
   const [fw, fh] = focusSize(dist, aspect);
   const p = _eye.clone().addScaledVector(_fwd, dist);
-  p.y = Math.min(Math.max(fh / 2 + 0.05, _eye.y), Math.max(_eye.y, H * roomScale - fh / 2 - 0.05));
+  // Keep the (tilted) panel clear of floor and ceiling.
+  const half = fh / 2 * Math.cos(pitch) + 0.05, top = H * roomScale;
+  p.y = top > 2 * half ? THREE.MathUtils.clamp(p.y, half, top - half) : _eye.y;
   // PlaneGeometry faces +z; Matrix4.lookAt(eye, target) points +z from target toward eye,
   // so pass the viewer as "eye" and the panel as "target" to make the panel face the viewer.
-  const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(_eye.clone().setY(p.y), p, new THREE.Vector3(0, 1, 0)));
+  const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(_eye, p, new THREE.Vector3(0, 1, 0)));
   return { p, q, s: new THREE.Vector3(fw, fh, 1) };
 }
 // How far in front of the viewer the focus screen sits: 2.5 m, or 85% of the way to the wall if closer.
@@ -788,6 +802,9 @@ function focusDistance(eye, fwd) {
     const d = p.dist * roomScale - ((eye.x - ox) * p.nx + (eye.y - oy) * p.ny + (eye.z - oz) * p.nz);
     toWall = Math.min(toWall, d / along);
   }
+  const floorY = roomGroup.position.y, ceilY = floorY + H * roomScale;
+  if (fwd.y < -1e-4) toWall = Math.min(toWall, (eye.y - floorY) / -fwd.y);
+  if (fwd.y > 1e-4) toWall = Math.min(toWall, (ceilY - eye.y) / fwd.y);
   return Math.max(0.6, Math.min(2.5, toWall * 0.85));
 }
 // Size so the screen fills the chosen horizontal field of view at that distance,

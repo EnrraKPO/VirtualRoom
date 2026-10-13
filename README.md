@@ -25,7 +25,7 @@ presence and whether an `immersive-vr` session is supported.
 
 | Section | What it does |
 |---|---|
-| Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere, or an N-trapezohedron with 2N kite faces, N = 3–16, odd N for a flat ceiling) standing on one face, sized by the width across (twice the floor face's inradius; height follows). A prism's walls get the normal wall grid, its N-gon floor and ceiling carry the largest square grid that fits. A polyhedron's faces are each one screen showing the video centre-cropped to the face shape; "Split each face" (level 1–4) cuts triangles into L² screens and pentagons into a fan of 5 × (L−1)². "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. |
+| Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere, or an N-trapezohedron with 2N kite faces, N = 3–16, odd N for a flat ceiling) standing on one face, sized by the width across (twice the floor face's inradius; height follows). A prism's walls get the normal wall grid, its N-gon floor and ceiling carry the largest square grid that fits. A polyhedron's faces are each one screen showing the video centre-cropped to the face shape; "Split each face" (level 1–4) cuts triangles into L² screens and pentagons into a fan of 5 × (L−1)². "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. **Turning**: smooth (speed follows stick deflection) or snap (15° per stick flick), for both turning and tilting. |
 | Screens per surface | Starting grid (cols × rows) for walls and for floor/ceiling. Optional bezels. **Apply layout** rebuilds everything and resets per-wall grids and room scale. |
 | Videos | **Add folder…** adds a folder to the library (File System Access API); each folder row has a **subfolders** checkbox (on by default) and an × to remove it. **Add files…** adds one or more individual videos as a row. Rows persist across launches in IndexedDB; after a restart a row says "click to reopen" until you click it to re-grant read access. **Shuffle** redeals from the combined pool; **Clear** removes every row. "Use sample video" shows the sample until the next shuffle or layout change. Also: "Start each video at a random point", "Auto-jump every N s", "Separate decoder per screen" (stress test for non-library mode), "Mute all". |
 | Stats | render fps, decoder count, audible count, dropped video frames %, stalled/paused. |
@@ -66,7 +66,8 @@ stays on the face.
 | Grip | any | walk (head-relative) |
 | Grip + Trigger | ▲ ▼ | fly up / down |
 | Trigger | ◀ ▶ | turn in place |
-| Grip | stick click | back to room centre, floor level |
+| Trigger | ▲ ▼ | tilt the room about you (the wall ahead rolls up over you); any orientation is reachable by combining |
+| Grip | stick click | back to room centre, floor level, room levelled |
 
 Once the stick moves while grip or trigger is held, that press is movement only and will
 not swap / copy / toggle audio on release.
@@ -107,7 +108,11 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   so it opens inside your view whichever surface the screen came from. `floatTile` is a pseudo-tile with `isFloat` + `origin`, so all
   per-tile actions work on it. Size = `focusSize(dist, aspect)`, distance = `focusDistance()`.
 - **Viewer rig**: `rig` group contains the camera and both controllers. Walking/flying move
-  it, turning rotates it around the head. `clampRig()` keeps the head inside the room.
+  it, turning rotates it around the head. Tilting (`pitchRoom`) instead rotates `roomGroup` about
+  the head, so the room has its own quaternion. `clampRig()` works in unscaled room-local space
+  (`toRoomLocal`/`fromRoomLocal`, `roomPlanes()` = walls + floor + ceiling): while level it pushes
+  horizontally and applies the floor/ceiling rule vertically; while tilted every plane pushes along
+  its normal and the standing-height rule is off. `recentre()` levels the room.
 - **Room scale**: `roomGroup.scale` + `roomGroup.position`, scaled about the head so the
   floor stays at y=0 and walls recede evenly. `commitRoomScale()` bakes the live scale into
   the W/D/H fields on stick release.

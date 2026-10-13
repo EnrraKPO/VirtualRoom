@@ -19,6 +19,16 @@ function wallPlanes() {
   for (let i = 0; i < N; i++) { const phi = i * 2 * Math.PI / N; out.push({ nx: Math.sin(phi), ny: 0, nz: -Math.cos(phi), dist: a }); }
   return out;
 }
+// All room planes in unscaled room-local space: walls/faces plus floor and ceiling.
+function roomPlanes() {
+  return [...wallPlanes(), { nx: 0, ny: -1, nz: 0, dist: polyCentreY }, { nx: 0, ny: 1, nz: 0, dist: H - polyCentreY }];
+}
+// The room can be tilted (pitched about the viewer); these map between world and unscaled room-local space.
+const _rq = new THREE.Quaternion(), _lv = new THREE.Vector3(), _lv2 = new THREE.Vector3();
+const roomLevel = () => roomGroup.quaternion.w > 0.99999;
+function toRoomLocal(v, out) { return out.copy(v).sub(roomGroup.position).applyQuaternion(_rq.copy(roomGroup.quaternion).invert()).multiplyScalar(1 / roomScale); }
+function toRoomLocalDir(v, out) { return out.copy(v).applyQuaternion(_rq.copy(roomGroup.quaternion).invert()); }
+function fromRoomLocal(l, out) { return out.copy(l).multiplyScalar(roomScale).applyQuaternion(roomGroup.quaternion).add(roomGroup.position); }
 function surfaces() {
   if (shape === 'box') return [
     { key: 'front', kind: 'wall', size: [W, H], pos: [0, H / 2, -D / 2], rot: [0, 0, 0] },
@@ -289,7 +299,7 @@ function buildLayout() {
   W = +$('roomW').value || 5; D = shape === 'box' ? (+$('roomD').value || 5) : W; H = +$('roomH').value || 3;
   polyCentreY = 0;
   if (isPoly()) { const ph = polyhedron(shape, W, N); H = ph.top; polyCentreY = ph.centre.y; $('roomH').value = H.toFixed(1); }
-  roomScale = 1; roomGroup.scale.setScalar(1); roomGroup.position.set(0, 0, 0);
+  roomScale = 1; roomGroup.scale.setScalar(1); roomGroup.position.set(0, 0, 0); roomGroup.quaternion.identity();
   for (const s of surfaces()) {
     grids[s.key] = s.kind === 'face' ? { cols: Math.max(1, Math.min(4, +$('faceLevel').value || 1)), rows: 1, face: true } : {
       cols: +$(s.kind === 'wall' ? 'wallCols' : 'flatCols').value,
@@ -688,10 +698,13 @@ function scaleRoom(f) {
   // keep the head's position in room-local space unchanged by shifting the room.
   const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
   cam.getWorldPosition(_head);
-  const lx = (_head.x - roomGroup.position.x) / s0, lz = (_head.z - roomGroup.position.z) / s0;
+  const level = roomLevel();
+  roomScale = s0; toRoomLocal(_head, _lv); roomScale = Math.max(1.5 / base, Math.min(40 / base, s0 * f));
   roomGroup.scale.setScalar(roomScale);
-  roomGroup.position.x = _head.x - lx * roomScale;
-  roomGroup.position.z = _head.z - lz * roomScale;
+  _lv2.copy(_lv).multiplyScalar(roomScale).applyQuaternion(roomGroup.quaternion);
+  roomGroup.position.x = _head.x - _lv2.x;
+  roomGroup.position.z = _head.z - _lv2.z;
+  if (!level) roomGroup.position.y = _head.y - _lv2.y;   // tilted: scale about the head in 3D
   clampRig();
   updateTileCount();
 }
@@ -785,8 +798,8 @@ function focusTarget() {
   const [fw, fh] = focusSize(dist, aspect);
   const p = _eye.clone().addScaledVector(_fwd, dist);
   // Keep the (tilted) panel clear of floor and ceiling.
-  const half = fh / 2 * Math.cos(pitch) + 0.05, top = H * roomScale;
-  p.y = top > 2 * half ? THREE.MathUtils.clamp(p.y, half, top - half) : _eye.y;
+  const half = fh / 2 * Math.cos(pitch) + 0.05, top = H * roomScale, fy = roomGroup.position.y;
+  if (roomLevel()) p.y = top > 2 * half ? THREE.MathUtils.clamp(p.y, fy + half, fy + top - half) : _eye.y;
   // PlaneGeometry faces +z; Matrix4.lookAt(eye, target) points +z from target toward eye,
   // so pass the viewer as "eye" and the panel as "target" to make the panel face the viewer.
   const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().lookAt(_eye, p, new THREE.Vector3(0, 1, 0)));
@@ -794,18 +807,15 @@ function focusTarget() {
 }
 // How far in front of the viewer the focus screen sits: 2.5 m, or 85% of the way to the wall if closer.
 function focusDistance(eye, fwd) {
-  const ox = roomGroup.position.x, oy = roomGroup.position.y + polyCentreY * roomScale, oz = roomGroup.position.z;
+  toRoomLocal(eye, _lv); toRoomLocalDir(fwd, _lv2);
   let toWall = Infinity;
-  for (const p of wallPlanes()) {
-    const along = fwd.x * p.nx + fwd.y * p.ny + fwd.z * p.nz;
+  for (const p of roomPlanes()) {
+    const along = _lv2.x * p.nx + _lv2.y * p.ny + _lv2.z * p.nz;
     if (along <= 1e-4) continue;
-    const d = p.dist * roomScale - ((eye.x - ox) * p.nx + (eye.y - oy) * p.ny + (eye.z - oz) * p.nz);
+    const d = p.dist - (_lv.x * p.nx + (_lv.y - polyCentreY) * p.ny + _lv.z * p.nz);
     toWall = Math.min(toWall, d / along);
   }
-  const floorY = roomGroup.position.y, ceilY = floorY + H * roomScale;
-  if (fwd.y < -1e-4) toWall = Math.min(toWall, (eye.y - floorY) / -fwd.y);
-  if (fwd.y > 1e-4) toWall = Math.min(toWall, (ceilY - eye.y) / fwd.y);
-  return Math.max(0.6, Math.min(2.5, toWall * 0.85));
+  return Math.max(0.6, Math.min(2.5, toWall * roomScale * 0.85));
 }
 // Size so the screen fills the chosen horizontal field of view at that distance,
 // capped by the room height so it never pokes through floor or ceiling.
@@ -1110,13 +1120,23 @@ function updateHand(hand, dt, now) {
     hand.walking = true;
     if (trigger) moveRig(ax, 0, dt, -ay); else moveRig(ax, ay, dt, 0);
   }
-  // Trigger (without grip) + stick left/right = turn in place.
-  if (trigger && !grip && Math.abs(ax) > dz && Math.abs(ax) >= Math.abs(ay)) {
+  // Trigger (without grip) + stick: left/right = turn in place, up/down = tilt the room about you.
+  // "Turning" setting: smooth (speed follows deflection) or snap (one step per stick flick).
+  if (trigger && !grip && stickActive) {
     if (hand.drag) cancelDrag(hand);
     hand.turning = true;
-    const n = (Math.abs(ax) - dz) / (1 - dz);
-    turnRig(-Math.sign(ax) * n * n * TURN_SPEED * dt);
+    const horiz = Math.abs(ax) >= Math.abs(ay);
+    if ($('turnMode').value === 'snap') {
+      if (!hand.snapped && Math.max(Math.abs(ax), Math.abs(ay)) > 0.6) {
+        hand.snapped = true;
+        if (horiz) turnRig(-Math.sign(ax) * SNAP_ANGLE); else pitchRoom(-Math.sign(ay) * SNAP_ANGLE);
+      }
+    } else {
+      const n = ((horiz ? Math.abs(ax) : Math.abs(ay)) - dz) / (1 - dz);
+      if (horiz) turnRig(-Math.sign(ax) * n * n * TURN_SPEED * dt); else pitchRoom(-Math.sign(ay) * n * n * TURN_SPEED * dt);
+    }
   }
+  if (Math.max(Math.abs(ax), Math.abs(ay)) < 0.3) hand.snapped = false;
   if (!trigger && p.trigger) hand.turning = false;
   if (grip && stick && !p.stick) recentre();                            // grip + stick click = back to centre
   else if (tile && stick && !p.stick) jumpRandom(tile);
@@ -1172,10 +1192,24 @@ function turnRig(angle) {
   rig.position.sub(_head).applyQuaternion(_rot).add(_head);
   rig.quaternion.premultiply(_rot);
 }
-// Put the viewer's head at the room's centre
+const SNAP_ANGLE = THREE.MathUtils.degToRad(15);
+// Tilt the room about the viewer's head, around the head's left-right axis (stick forward = wall ahead rolls up over you).
+function pitchRoom(angle) {
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(_head);
+  cam.getWorldDirection(_hf); _hf.y = 0;
+  if (_hf.lengthSq() < 1e-4) _hf.set(0, 0, -1); else _hf.normalize();
+  _hr.set(-_hf.z, 0, _hf.x);
+  _rot.setFromAxisAngle(_hr, angle);
+  roomGroup.position.sub(_head).applyQuaternion(_rot).add(_head);
+  roomGroup.quaternion.premultiply(_rot);
+  clampRig();
+}
+// Put the viewer's head at the room's centre and level the room again
 function recentre() {
   const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
   cam.getWorldPosition(_head);
+  roomGroup.quaternion.identity(); roomGroup.position.y = 0;
   rig.position.x += roomGroup.position.x - _head.x;
   rig.position.z += roomGroup.position.z - _head.z;
   rig.position.y = 0;
@@ -1183,20 +1217,25 @@ function recentre() {
 function clampRig() {
   const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
   cam.getWorldPosition(_head);
-  const m = 0.25, ox = roomGroup.position.x, oy = roomGroup.position.y + polyCentreY * roomScale, oz = roomGroup.position.z;
-  let cx = _head.x, cz = _head.z;
-  const hy = _head.y;
-  for (let pass = 0; pass < 2; pass++) for (const p of wallPlanes()) {   // two passes settle corners
-    const lim = p.dist * roomScale - m;
-    const d = (cx - ox) * p.nx + (hy - oy) * p.ny + (cz - oz) * p.nz;
-    const hz = Math.hypot(p.nx, p.nz);
-    if (d > lim && hz > 0.35) { const t = (d - lim) / hz; cx -= t * p.nx / hz; cz -= t * p.nz / hz; }   // sloped faces push you back horizontally; flat ceilings are handled by maxY
+  const m = 0.25 / roomScale, level = roomLevel();
+  // Work in unscaled room-local space. Level room: walls only, pushed horizontally (sloped faces must not lift you),
+  // floor/ceiling via the vertical rule below. Tilted room: every plane, pushed along its normal.
+  toRoomLocal(_head, _lv);
+  const planes = level ? wallPlanes() : roomPlanes();
+  for (let pass = 0; pass < 2; pass++) for (const p of planes) {   // two passes settle corners
+    const lim = p.dist - m;
+    const d = _lv.x * p.nx + (_lv.y - polyCentreY) * p.ny + _lv.z * p.nz;
+    if (d <= lim) continue;
+    if (level) { const hz = Math.hypot(p.nx, p.nz); if (hz > 0.35) { const t = (d - lim) / hz; _lv.x -= t * p.nx / hz; _lv.z -= t * p.nz / hz; } }
+    else { _lv.x -= (d - lim) * p.nx; _lv.y -= (d - lim) * p.ny; _lv.z -= (d - lim) * p.nz; }
   }
-  rig.position.x += cx - _head.x;
-  rig.position.z += cz - _head.z;
-  // Vertical: never below your real standing height, never through the ceiling
+  fromRoomLocal(_lv, _lv2);
+  rig.position.add(_lv2.sub(_head));
+  if (!level) return;
+  // Vertical (level room only): never below your real standing height, never through the ceiling
+  cam.getWorldPosition(_head);
   const headAboveRig = _head.y - rig.position.y;
-  const minY = 0, maxY = Math.max(0, H * roomScale - m - headAboveRig);
+  const minY = 0, maxY = Math.max(0, roomGroup.position.y + H * roomScale - 0.25 - headAboveRig);
   rig.position.y = Math.max(minY, Math.min(maxY, rig.position.y));
 }
 function cancelDrag(hand) {

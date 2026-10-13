@@ -423,8 +423,8 @@ function setRingProgress(ring, progress) {
 // Sound icon: speaker (green = audible, grey with red cross = muted), pause bars when paused.
 const ICON_DEG = 2.6, ICON_LIFT = 0.06;   // apparent size (degrees) and how far it floats in front of the surface (m)
 const iconMats = {};
-function iconMaterial(audible, paused) {
-  const key = (audible ? 'a' : 'm') + (paused ? 'p' : '');
+function iconMaterial(audible, paused, top = false) {
+  const key = (audible ? 'a' : 'm') + (paused ? 'p' : '') + (top ? 't' : '');
   if (iconMats[key]) return iconMats[key];
   const cv = document.createElement('canvas'); cv.width = cv.height = 128;
   const c = cv.getContext('2d');
@@ -436,7 +436,7 @@ function iconMaterial(audible, paused) {
   else { c.strokeStyle = '#f55'; c.beginPath(); c.moveTo(80, 50); c.lineTo(106, 78); c.moveTo(106, 50); c.lineTo(80, 78); c.stroke(); }
   if (paused) { c.fillStyle = '#ffd24a'; c.fillRect(84, 86, 10, 30); c.fillRect(100, 86, 10, 30); }
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
-  return iconMats[key] = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+  return iconMats[key] = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: !top });
 }
 function makeIcon() {
   const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), iconMaterial(false, false));
@@ -1003,7 +1003,9 @@ scene.add(floatGroup);
 const floatMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), placeholder);
 const floatHL = makeRing([[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]], 0.012);
 floatHL.position.z = -0.003; floatHL.visible = false;
-const floatIcon = makeIcon();
+floatHL.material = ringMat.clone(); floatHL.material.depthTest = false; floatHL.renderOrder = 21;
+const floatIcon = makeIcon(); floatIcon.renderOrder = 22;
+floatMesh.renderOrder = 20;   // the focus screen draws over everything (its material gets depthTest off in syncFloat)
 floatGroup.add(floatMesh, floatHL, floatIcon);
 floatGroup.visible = false;
 const floatTile = { mesh: floatMesh, w: 1, h: 1, video: null, label: '', highlight: floatHL, icon: floatIcon, isFloat: true, origin: null, outline: [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]] };
@@ -1018,6 +1020,7 @@ function syncFloat() {
   const prev = floatMesh.material;
   if (prev !== placeholder && prev !== focused.mesh.material && prev.map) { prev.map.dispose(); prev.dispose(); }
   floatMesh.material = focused.mesh.material;
+  floatMesh.material.depthTest = false; floatMesh.material.needsUpdate = true;
   focused.mesh.material = dimMat;     // wall slot goes dark while its video is out
 }
 function applyDim(on) {
@@ -1087,7 +1090,7 @@ function tilePose(tile) {
 function focusOn(tile) {
   if (tile.isFloat) { unfocus(); return; }
   if (focused) { unfocus(true); }
-  focused = tile; floatTile.origin = tile;
+  focused = tile; floatTile.origin = tile; floatTile.custom = false;
   syncFloat();
   floatGroup.visible = true;
   const from = tilePose(tile), to = focusTarget();
@@ -1103,6 +1106,7 @@ function unfocus(immediate = false) {
   const to = tilePose(tile);
   const restore = () => {
     tile.mesh.material = floatMesh.material; floatMesh.material = placeholder;
+    if (tile.mesh.material !== placeholder) { tile.mesh.material.depthTest = true; tile.mesh.material.needsUpdate = true; }
     floatGroup.visible = false; floatTile.video = null; floatTile.origin = null;
   };
   applyDim(false);
@@ -1130,8 +1134,10 @@ setInterval(() => {
   const v = focused.video; if (!v || !v.videoWidth) return;
   const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
   cam.getWorldPosition(_eye);
+  const aspect = v.videoWidth / v.videoHeight;
+  if (floatTile.custom) { const fh = floatGroup.scale.x / aspect; if (Math.abs(floatGroup.scale.y - fh) > 0.01) floatGroup.scale.y = fh; return; }
   const dist = _eye.distanceTo(floatGroup.position);
-  const [fw, fh] = focusSize(dist, v.videoWidth / v.videoHeight);
+  const [fw, fh] = focusSize(dist, aspect);
   if (Math.abs(floatGroup.scale.y - fh) > 0.01 || Math.abs(floatGroup.scale.x - fw) > 0.01) floatGroup.scale.set(fw, fh, 1);
 }, 500);
 
@@ -1183,7 +1189,7 @@ const panelTex = new THREE.CanvasTexture(panelCanvas);
 panelTex.colorSpace = THREE.SRGBColorSpace;
 const panelMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
   new THREE.MeshBasicMaterial({ map: panelTex, transparent: true, depthTest: false }));
-panelMesh.renderOrder = 11; panelMesh.visible = false;
+panelMesh.renderOrder = 30; panelMesh.visible = false;
 function drawPanel(tile) {
   const c = panelCtx, Wc = panelCanvas.width, Hc = panelCanvas.height;
   const src = tile.isFloat ? tile.origin : tile;
@@ -1280,7 +1286,7 @@ function updateHud() {
     const show = t === focusTile || (v && !v.muted && !(focused && t === focused));
     if (!show) { t.icon.visible = false; continue; }
     t.icon.visible = true;
-    t.icon.material = iconMaterial(v && !v.muted, v && v.paused);
+    t.icon.material = iconMaterial(v && !v.muted, v && v.paused, t.isFloat);
     t.mesh.getWorldPosition(_iw);
     const size = 2 * _eye.distanceTo(_iw) * Math.tan(THREE.MathUtils.degToRad(ICON_DEG / 2)) * (t === focusTile ? 1 : 0.7);
     if (t.isFloat) {   // unit space inside floatGroup
@@ -1346,8 +1352,12 @@ function updateHand(hand, dt, now) {
   hand.hovered = tile;
   // Beam point in the tile's own plane (metres from the tile centre), for in-screen drags
   let lx = 0, ly = 0;
-  if (tile && !tile.isFloat && !onPanel) { _lp.copy(hit.point); tile.mesh.parent.worldToLocal(_lp); lx = _lp.x - tile.mesh.position.x; ly = _lp.y - tile.mesh.position.y; }
-  if (hand.drag) adjustDrag(hand, tile, lx, ly);
+  if (tile && !onPanel) {
+    _lp.copy(hit.point);
+    if (tile.isFloat) { floatGroup.worldToLocal(_lp); lx = _lp.x; ly = _lp.y; }   // unit coords on the float
+    else { tile.mesh.parent.worldToLocal(_lp); lx = _lp.x - tile.mesh.position.x; ly = _lp.y - tile.mesh.position.y; }
+  }
+  if (hand.drag) adjustDrag(hand, tile, lx, ly, hit);
   const btn = onPanel ? panelButtonAt(hit.uv) : -1;
   if (btn !== panelHoverBtn) { panelHoverBtn = btn; if (focusTile) drawPanel(focusTile); }
 
@@ -1394,14 +1404,18 @@ function updateHand(hand, dt, now) {
   if (Math.max(Math.abs(ax), Math.abs(ay)) < 0.3) hand.snapped = false;
   if (!trigger && p.trigger) hand.turning = false;
   if (grip && stick && !p.stick) recentre();                            // grip + stick click = back to centre
-  else if (hand.drag && hand.drag.kind === 'swap' && stick && !p.stick) { resetView(hand.drag.from); hand.drag.adjusted = true; }   // stick click while trigger-dragging = reset pan/zoom
+  else if (hand.drag && hand.drag.kind === 'swap' && stick && !p.stick) {   // stick click while trigger-dragging = reset pan/zoom (or the float's pose)
+    if (hand.drag.from.isFloat) { const to = focusTarget(); floatGroup.position.copy(to.p); floatGroup.quaternion.copy(to.q); floatGroup.scale.copy(to.s); floatTile.custom = false; }
+    else resetView(hand.drag.from);
+    hand.drag.adjusted = true;
+  }
   else if (tile && stick && !p.stick) jumpRandom(tile);
   if (!grip && p.grip) hand.walking = false;
 
   // Press on a screen starts a potential drag; release decides: same screen = tap action,
   // different screen = two-screen action (trigger drag = swap places, grip drag = copy).
-  if (trigger && !p.trigger && tile) startDrag(hand, 'swap', tile, now, lx, ly);
-  if (grip && !p.grip && tile) startDrag(hand, 'copy', tile, now, lx, ly);
+  if (trigger && !p.trigger && tile) startDrag(hand, 'swap', tile, now, lx, ly, hit);
+  if (grip && !p.grip && tile) startDrag(hand, 'copy', tile, now, lx, ly, hit);
   if (!trigger && p.trigger && hand.drag && hand.drag.kind === 'swap') endDrag(hand, tile, now);
   if (!grip && p.grip && hand.drag && hand.drag.kind === 'copy') endDrag(hand, tile, now);
 
@@ -1501,16 +1515,44 @@ function cancelDrag(hand) {
 
 const DRAG_COLORS = { swap: 0xffa040, copy: 0x4aff8a, idle: 0x4aa8ff };
 const _lp = new THREE.Vector3();
-function startDrag(hand, kind, tile, now, lx = 0, ly = 0) {
+function startDrag(hand, kind, tile, now, lx = 0, ly = 0, hit = null) {
   hand.drag = { kind, from: tile, t0: now, x0: lx, y0: ly, view0: tile.view ? { ...tile.view } : null, adjusted: false, left: false };
+  if (tile.isFloat && hit) { const d = hand.drag; d.dist = hit.distance; d.s0 = floatGroup.scale.clone(); d.up0 = floatUp(hit.point); }
   hand.beam.material.color.setHex(DRAG_COLORS[kind]);
   if (kind === 'copy') hand.gripDownAt = now;
 }
 // While a drag stays on the screen it started on, beam movement pans (trigger) or zooms (grip) that screen's
 // video. Leaving the screen reverts the adjustment and the drag becomes the usual swap/copy gesture.
-function adjustDrag(hand, tile, lx, ly) {
+// Height of a world point above the float's centre, along the float's up axis (metres)
+const _fu = new THREE.Vector3(), _fo = new THREE.Vector3();
+function floatUp(point) { _fu.set(0, 1, 0).applyQuaternion(floatGroup.quaternion); return _fo.copy(point).sub(floatGroup.position).dot(_fu); }
+// Drags on the focus screen: trigger moves it (the grabbed point stays under the beam, the screen keeps facing you),
+// grip scales it (beam up = bigger). Either marks the float as custom so it stops auto-sizing.
+function adjustFloat(hand, tile, lx, ly, hit) {
+  const d = hand.drag;
+  if (tile !== floatTile || !hit) { d.left = true; return; }
+  if (d.left) { d.x0 = lx; d.y0 = ly; d.dist = hit.distance; d.s0 = floatGroup.scale.clone(); d.up0 = floatUp(hit.point); d.left = false; }
+  const dx = (lx - d.x0) * d.s0.x, dy = (ly - d.y0) * d.s0.y;
+  if (!d.adjusted && Math.hypot(dx, dy) < 0.05 * Math.min(d.s0.x, d.s0.y)) return;
+  d.adjusted = true; floatTile.custom = true;
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(_eye);
+  if (d.kind === 'swap') {
+    // where the grabbed point should be now, then back off by the grab offset (in the float's own frame)
+    _fo.copy(raycaster.ray.direction).multiplyScalar(d.dist).add(raycaster.ray.origin);
+    _fu.set(d.x0 * floatGroup.scale.x, d.y0 * floatGroup.scale.y, 0).applyQuaternion(floatGroup.quaternion);
+    floatGroup.position.copy(_fo).sub(_fu);
+    floatGroup.quaternion.setFromRotationMatrix(new THREE.Matrix4().lookAt(_eye, floatGroup.position, new THREE.Vector3(0, 1, 0)));
+  } else {
+    const k = Math.pow(2, (floatUp(hit.point) - d.up0) / d.s0.y);
+    const w = Math.max(0.3, Math.min(12, d.s0.x * k));
+    floatGroup.scale.set(w, w * d.s0.y / d.s0.x, 1);
+  }
+}
+function adjustDrag(hand, tile, lx, ly, hit) {
   const d = hand.drag, f = d.from;
-  if (f.isFloat || !f.fit) return;
+  if (f.isFloat) return adjustFloat(hand, tile, lx, ly, hit);
+  if (!f.fit) return;
   if (tile !== f) { if (d.adjusted) { f.view = d.view0; refitTile(f); d.adjusted = false; } d.left = true; return; }
   if (d.left) { d.x0 = lx; d.y0 = ly; d.left = false; }
   const dx = lx - d.x0, dy = ly - d.y0;

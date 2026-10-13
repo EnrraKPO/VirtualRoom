@@ -69,6 +69,10 @@ the sound icon even when not pointed at.
 | Grip | zoom: beam up = in, down = out, centred on the screen |
 | Stick click while trigger-dragging | reset that screen to the crop setting |
 
+On the **focus screen** the same drags move it (trigger: the grabbed point follows the beam, the
+screen keeps facing you) and scale it (grip: beam up = bigger, 0.3–12 m wide); stick click while
+trigger-dragging puts it back to its default pose. The focus screen always draws on top of the room.
+
 A screen you have adjusted keeps its own zoom and offset (the crop setting no longer applies to
 it) until you reset it or rebuild its surface. Leaving the screen mid-drag reverts the adjustment
 and the drag becomes a normal swap / copy.
@@ -131,7 +135,9 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   `persistRoots()` stores handles in IndexedDB; the legacy single `folder` key is migrated.
 - **Focus**: `floatGroup` (unit plane scaled to size) animates from the tile's world pose to
   a pose along the eye→screen line (pitch limited to ±65°, kept clear of walls, floor and ceiling),
-  so it opens inside your view whichever surface the screen came from. `floatTile` is a pseudo-tile with `isFloat` + `origin`, so all
+  so it opens inside your view whichever surface the screen came from. Its material (and ring, icon,
+  panel) render with depth testing off and high `renderOrder`, so walls never cover it; `floatTile.custom`
+  is set once the user moves or scales it, after which only its aspect is auto-corrected. `floatTile` is a pseudo-tile with `isFloat` + `origin`, so all
   per-tile actions work on it. Size = `focusSize(dist, aspect)`, distance = `focusDistance()`.
 - **Viewer rig**: `rig` group contains the camera and both controllers. Walking/flying move
   it, turning rotates it around the head. Tilting (`pitchRoom`) instead rotates `roomGroup` about

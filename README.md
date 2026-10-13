@@ -1,7 +1,7 @@
 # Video Room
 
 A WebXR app for PCVR (tested with PSVR2 via SteamVR OpenXR). You stand in a box room where
-every wall, the floor and the ceiling are grids of screens, each playing a video. Built with
+every wall, the floor and the ceiling are cut into screens, each playing a video. Built with
 Three.js and Vite, no engine install needed.
 
 ## Running
@@ -25,8 +25,8 @@ presence and whether an `immersive-vr` session is supported.
 
 | Section | What it does |
 |---|---|
-| Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere, or an N-trapezohedron with 2N kite faces, N = 3–16, odd N for a flat ceiling) standing on one face, sized by the width across (twice the floor face's inradius; height follows). A prism's walls get the normal wall grid, its N-gon floor and ceiling carry the largest square grid that fits. A polyhedron's faces are each one screen showing the video centre-cropped to the face shape; "Split each face" (level 1–4) cuts triangles into L² screens and pentagons into a fan of 5 × (L−1)². **Max crop** caps how much of the video's width or height may be cut off (0 = never crop, 100 = always cover the face); **Fill the rest with** blank (the screen is clipped to the video, the dark face shows around it) mirrored video (kaleidoscope-style repeats, with a subtle dark line on every seam where a reflection starts), or **nested copies**: smaller in-sync copies of the same video fitted into the leftover areas, each cropped a bit more per nesting level (depth 1–4, +N % per level), optionally **flipped**: copies beside the main video are mirrored horizontally, copies above/below it vertically, and each deeper level flips again relative to its parent, so the picture reflects outward like a hall of mirrors; leftovers too small (copy narrower than 12 cm or 20 % of the main video) or too slim (bounding box more than 4:1) get the chosen fallback, mirrored or blank. Both apply live. Rectangular screens use the same fit, so videos are cropped rather than stretched. "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. **Turning**: smooth (speed follows stick deflection) or snap (15° per stick flick), for both turning and tilting. **Transitions**: normal / quick / slow / off, remembered. A new video on a screen pops in: once it has a frame, a copy of the screen showing it grows from the centre over the old video, which keeps playing until covered. When a surface's grid or split level changes, the old screens stay behind and each new screen is unveiled in place by a sector sweeping clockwise about the surface centre, from one edge of the screen to the other (a screen containing the centre gets a full clock wipe); the video is already in position, only the window onto it grows. |
-| Screens per surface | Starting grid (cols × rows) for walls and for floor/ceiling. Optional bezels. **Apply layout** rebuilds everything and resets per-wall grids and room scale. |
+| Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere, or an N-trapezohedron with 2N kite faces, N = 3–16, odd N for a flat ceiling) standing on one face, sized by the width across (twice the floor face's inradius; height follows). Every surface (wall, floor, ceiling, prism N-gon, polyhedron face) is one container cut into N equal-area pieces: rectangles into cells in rows (row counts chosen so cells are closest to 16:9, e.g. 5 = 3 over 2), anything else into blades fanning from the centroid. Any piece can be split again the same way, so a surface is a tree of containers. **Max crop** caps how much of the video's width or height may be cut off (0 = never crop, 100 = always cover the face); **Fill the rest with** blank (the screen is clipped to the video, the dark face shows around it) mirrored video (kaleidoscope-style repeats, with a subtle dark line on every seam where a reflection starts), or **nested copies**: smaller in-sync copies of the same video fitted into the leftover areas, each cropped a bit more per nesting level (depth 1–4, +N % per level), optionally **flipped**: copies beside the main video are mirrored horizontally, copies above/below it vertically, and each deeper level flips again relative to its parent, so the picture reflects outward like a hall of mirrors; leftovers too small (copy narrower than 12 cm or 20 % of the main video) or too slim (bounding box more than 4:1) get the chosen fallback, mirrored or blank. Both apply live. Rectangular screens use the same fit, so videos are cropped rather than stretched. "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. **Turning**: smooth (speed follows stick deflection) or snap (15° per stick flick), for both turning and tilting. **Transitions**: normal / quick / slow / off, remembered. A new video on a screen pops in: once it has a frame, a copy of the screen showing it grows from the centre over the old video, which keeps playing until covered. When a container's pieces change, its old screens stay behind and each new screen is unveiled in place by a sector sweeping clockwise about the container's centre, from one edge of the screen to the other (a screen containing the centre gets a full clock wipe); the video is already in position, only the window onto it grows. |
+| Screens per surface | Starting piece count per face, per wall and for floor/ceiling (any number, 1–64). Optional bezels. **Apply layout** rebuilds everything and resets every surface's tree and the room scale. |
 | Videos | **Add folder…** adds a folder to the library (File System Access API); each folder row has a **subfolders** checkbox (on by default) and an × to remove it. **Add files…** adds one or more individual videos as a row. Rows persist across launches in IndexedDB; after a restart a row says "click to reopen" until you click it to re-grant read access. **Shuffle** redeals from the combined pool; **Clear** removes every row. "Use sample video" shows the sample until the next shuffle or layout change. Also: "Start each video at a random point", "Auto-jump every N s", "Separate decoder per screen" (stress test for non-library mode), "Mute all". |
 | Likes & dealing | ♥ on a screen's panel likes its video; the list persists (file handles in IndexedDB, matched to the library by folder name + path, so it survives restarts and re-scans). **Deal**: all videos / liked first, then the rest / liked only (repeats) — used by Apply layout, Shuffle, adding folders and startup, and remembered. **Export likes** saves the list as JSON; **Clear likes** empties it. |
 | Stats | render fps, decoder count, audible count, dropped video frames %, stalled/paused. |
@@ -54,7 +54,7 @@ the sound icon even when not pointed at.
 | A / X | pause / play |
 | B / Y | focus: lift the screen off the wall into a big floating panel; again to send it back |
 | Stick click | jump to a random point in the timeline |
-| Panel buttons | − / + columns and rows for **that wall only** (other walls keep playing); on a polyhedron face − / + change its split level. Zoom − / + (×1.25 per press) and ↺ reset apply to **that screen only**. On the focus screen the same buttons scale the floating screen itself (0.1–60 m wide, the width is shown) and ↺ puts it back to its default pose |
+| Panel buttons | Layout of **this piece**: − removes it (its siblings re-flow evenly; a group left with one piece dissolves into its parent; greyed on a surface's only piece), + adds a sibling to its group (dealt a new video), ⊞ splits it into two (its video stays in the first half). The label shows the group size and, when nested, the depth. Other surfaces and other groups keep playing. Zoom − / + (×1.25 per press) and ↺ reset apply to **that screen only**. On the focus screen the same buttons scale the floating screen itself (0.1–60 m wide, the width is shown) and ↺ puts it back to its default pose |
 
 **Station board**: a small table that follows you at waist height, just below the straight-ahead
 view (look down to see it; faint until you look at it or point at it). Drag its ♥ "deploy" slot onto
@@ -109,6 +109,14 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   `kind: 'face'`, a local 2D polygon `pts` and a `quat`. `wallPlanes()` gives walls/faces as outward
   normals + distances from the room centre `(0, polyCentreY, 0)` and drives both `clampRig()` (sloped
   faces push the head back horizontally) and `focusDistance()`.
+- **Layout tree**: `layouts[key]` is a surface's root node `{ poly, children, parent, tile }` in surface-group
+  coordinates; `rebuildNode()` cuts each node's polygon into `children.length` pieces with `cutPolygon()`
+  (`gridCut` for axis-aligned rectangles, `fanCut` equal-area blades from the centroid otherwise) and
+  `leavesOf()` lists the screens. `makeLeafTile()` builds one screen per leaf (`tile.node` ↔ `node.tile`).
+  `layoutAction(tile, 'add' | 'remove' | 'split')` mutates the tree and `restructure(key, node)` rebuilds
+  only that container's subtree: surviving leaves inherit their old screen's video and view, a split piece's
+  first child inherits its parent's, new leaves are dealt; the old screens become a ghost (see Transitions)
+  and the new ones wipe in about the container's centroid.
 - **Fill regions**: `fitTile()` ends with a list of regions `{ poly, cx, cy, vw, vh }` (polygon + the video
   rectangle it maps to) merged by `regionsGeometry()` into the tile mesh. Blank = the clipped main region;
   mirror = the whole face mapped to the main rectangle (texture wraps mirrored); nested = main region plus
@@ -125,12 +133,12 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
 - **Transitions**: `setTileSource()` / `swapPlaces()` / `copyTo()` never put the new material on the mesh
   directly; they call `enterWith(tile, video, mat, finish, enter)`, which waits for the video to have a frame
   (`loadeddata`) and then runs the entrance: `popIn` (overlay mesh with the new fit, scaled 0 → 1 over the
-  old video) or `wipeIn(pivot)` (used by `changeGrid`: `tile.wipe = { pivot, a1, span, e }` makes
+  old video) or `wipeIn(pivot)` (used by `restructure`: `tile.wipe = { pivot, a1, span, e }` makes
   `applyTileGeometry()` clip every fill region with `clipSector()`; `sectorOf()` gives the screen's angular
   span seen from the surface centre). `cancelTransition()` applies the final state at once, so anything that
   touches a tile's material first cancels. Old videos/materials go through `retire()`, which checks tiles,
-  pending transitions and ghosts before killing/disposing. `changeGrid` keeps the previous surface group as a
-  ghost (translated 4 mm back, new backing and hit meshes hidden) until every new tile's transition is done.
+  pending transitions and ghosts before killing/disposing. `restructure` moves the previous screens' meshes into a
+  ghost group (4 mm back, new hit meshes hidden) until every new tile's transition is done.
   `disposeVideos()` drops all ghosts and transitions first.
 - **Per-screen view**: `tile.view = { zoom, dx, dy }` (null = follow the crop setting). `zoom` is relative to the
   inscribed video size (1 = whole video visible, `fit.coverRatio` = face covered, max 2× that); `dx/dy` are
@@ -139,14 +147,13 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   plus a zigzag ring, apex height solved so kites are planar and all vertices share one sphere), takes the convex hull by
   brute force (`hullFaces`, fine for ≤ 42 vertices), rotates face 0 down to be the floor, scales so the
   floor's inradius is `across / 2`, and returns per-face centroid, quaternion (local z = inward normal,
-  local y = up along the face) and counter-clockwise polygon. `splitPolygon()` subdivides; `buildFaceTiles()`
+  local y = up along the face) and counter-clockwise polygon. `makeLeafTile()`
   makes one `ShapeGeometry` tile per piece with `tile.poly`; `fitTile()` sizes the video rectangle between contain and cover
   per the max-crop setting, clips the mesh to it in blank mode (the full piece stays as a dark `hit` mesh
   for the beam) or lets the texture mirror-repeat in mirror mode; re-run on `loadedmetadata`, swap, copy
   and setting changes via `refitTile()` / `refitAll()`.
-- **Tiles**: `tiles[]` of `{ mesh, w, h, video, label, highlight, surface }`. `grids[key]` holds
-  cols/rows per surface; `buildSurface()` builds one surface, `changeGrid()` rebuilds one
-  surface without touching the others.
+- **Tiles**: `tiles[]` of `{ mesh, w, h, video, label, highlight, surface, node }`. `buildSurface()` builds one
+  surface from its layout tree (see below); `restructure()` rebuilds one container without touching the rest.
 - **Videos**: one `<video>` element per distinct source, `VideoTexture` on a
   `MeshBasicMaterial`. Copies share the element (and so the decoder). All start muted;
   audio is enabled per element. `setTileSource()` disposes old material/texture only if no

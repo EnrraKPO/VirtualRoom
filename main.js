@@ -142,24 +142,51 @@ function polyhedron(kind, across, n) {
   const top = Math.max(...V.map(v => v.y));
   return polyCache[ck] = { faces: out, centre, top };
 }
-// Split a convex polygon into pieces: triangles get level² sub-triangles, other polygons fan from the centre first.
-function splitPolygon(pts, level) {
-  if (level <= 1) return [pts];
-  const tri = (A, B, C, L) => {
-    const P = (i, j) => [A[0] + (B[0] - A[0]) * i / L + (C[0] - A[0]) * j / L, A[1] + (B[1] - A[1]) * i / L + (C[1] - A[1]) * j / L];
-    const out = [];
-    for (let i = 0; i < L; i++) for (let j = 0; j < L - i; j++) {
-      out.push([P(i, j), P(i + 1, j), P(i, j + 1)]);
-      if (i + j < L - 1) out.push([P(i + 1, j), P(i + 1, j + 1), P(i, j + 1)]);
-    }
-    return out;
-  };
-  if (pts.length === 3) return tri(pts[0], pts[1], pts[2], level);
-  const c = [0, 0];
-  for (const p of pts) { c[0] += p[0] / pts.length; c[1] += p[1] / pts.length; }
-  const out = [];
-  for (let i = 0; i < pts.length; i++) out.push(...tri(c, pts[i], pts[(i + 1) % pts.length], level - 1));
+// ---- Even splits: any convex polygon into n equal-area pieces ----
+// Rectangles become n cells in rows (row counts chosen so cells are closest to 16:9); anything else becomes n
+// blades fanning from the centroid, cut by area while walking the boundary from vertex 0.
+function isRect(poly) {
+  if (poly.length !== 4) return false;
+  const xs = poly.map(p => p[0]), ys = poly.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  return poly.every(p => (Math.abs(p[0] - x0) < 1e-6 || Math.abs(p[0] - x1) < 1e-6) && (Math.abs(p[1] - y0) < 1e-6 || Math.abs(p[1] - y1) < 1e-6));
+}
+function cutPolygon(poly, n) { return n <= 1 ? [poly] : isRect(poly) ? gridCut(poly, n) : fanCut(poly, n); }
+function gridCut(rect, n) {
+  const xs = rect.map(p => p[0]), ys = rect.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys), w = x1 - x0, h = y1 - y0;
+  const counts = r => Array.from({ length: r }, (_, i) => Math.floor(n / r) + (i < n % r ? 1 : 0));
+  let best = 1, bestScore = Infinity;
+  for (let r = 1; r <= n; r++) {   // worst cell's distance from 16:9 (in log aspect), smaller row count wins ties
+    const score = Math.max(...counts(r).map(k => Math.abs(Math.log((w / k) / (h * k / n) / (16 / 9)))));
+    if (score < bestScore - 0.05) { best = r; bestScore = score; }   // near-ties go to fewer rows (2 = side by side)
+  }
+  const out = []; let y = y1;
+  for (const k of counts(best)) {
+    const rh = h * k / n, cw = w / k;
+    for (let i = 0; i < k; i++) { const cx0 = x0 + i * cw; out.push([[cx0, y - rh], [cx0 + cw, y - rh], [cx0 + cw, y], [cx0, y]]); }
+    y -= rh;
+  }
   return out;
+}
+function fanCut(polyIn, n) {
+  const poly = polyArea(polyIn) < 0 ? polyIn.slice().reverse() : polyIn;
+  const c = polyCentroid(poly), m = poly.length, A = polyArea(poly), target = A / n;
+  const tri = (a, b) => ((a[0] - c[0]) * (b[1] - c[1]) - (b[0] - c[0]) * (a[1] - c[1])) / 2;
+  const out = []; let cur = [c, poly[0]], acc = 0, k = 1;
+  for (let i = 0; i < m; i++) {
+    let a = poly[i]; const b = poly[(i + 1) % m];
+    let seg = tri(a, b);
+    while (k < n && acc + seg >= k * target - 1e-12) {
+      const need = k * target - acc, t = seg > 1e-12 ? Math.min(1, need / seg) : 1;
+      const p = [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t];
+      cur.push(p); out.push(cur); cur = [c, p];
+      acc += need; seg -= need; a = p; k++;
+    }
+    acc += seg; cur.push(b);
+  }
+  out.push(cur);
+  return out.map(w => w.filter((p, i) => i === 0 || Math.hypot(p[0] - w[i - 1][0], p[1] - w[i - 1][1]) > 1e-9)).filter(w => w.length >= 3);
 }
 function polyCentroid(pts) { const c = [0, 0]; for (const p of pts) { c[0] += p[0] / pts.length; c[1] += p[1] / pts.length; } return c; }
 function shapeGeometry(pts) {   // pts centred on the piece's centroid, counter-clockwise
@@ -506,19 +533,32 @@ let sources = [];         // [{ src, label }]
 let videoEls = [];        // all live <video> elements
 const tileOf = new Map(); // mesh -> tile
 
-const grids = {};          // surface key -> { cols, rows }
+let layouts = {};          // surface key -> root node { poly, children: [node], parent, tile? }; a node with no children is one screen
 const surfaceGroups = {};  // surface key -> THREE.Group
+const leafNode = parent => ({ poly: null, children: [], parent, tile: null });
+const leavesOf = n => n.children.length ? n.children.flatMap(leavesOf) : [n];
+function rebuildNode(n) {   // recompute the polygons of a subtree from n.poly
+  if (!n.children.length) return;
+  const polys = cutPolygon(n.poly, n.children.length);
+  n.children.forEach((c, i) => { c.poly = polys[i]; c.parent = n; rebuildNode(c); });
+}
+function underNode(n, anc) { for (; n; n = n.parent) if (n === anc) return true; return false; }
+function surfacePoly(s) {
+  if (s.kind === 'face') return s.pts;
+  if (s.poly) { const { R, N: k, start } = s.poly; return Array.from({ length: k }, (_, i) => [R * Math.cos(start + i * 2 * Math.PI / k), R * Math.sin(start + i * 2 * Math.PI / k)]); }
+  const [w, h] = s.size; return [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2]];
+}
+function startCount(s) { return Math.max(1, Math.min(64, +$(s.kind === 'face' ? 'faceN' : s.kind === 'wall' ? 'wallN' : 'flatN').value || 1)); }
 
 function buildSurface(s) {
-  const { cols, rows } = grids[s.key];
   const bezel = $('bezel').checked ? 0.03 : 0;
   const g = new THREE.Group();
   g.position.set(...s.pos);
   if (s.quat) g.quaternion.copy(s.quat); else g.rotation.set(...s.rot);
   roomGroup.add(g);
   surfaceGroups[s.key] = g;
-  if (s.kind === 'face') return buildFaceTiles(s, g, cols, bezel);
-  if (s.poly) {   // polygon face: always backed so the corners outside the grid look closed
+  if (s.kind === 'face') { const back = new THREE.Mesh(shapeGeometry(s.pts), bezelMat); back.position.z = -0.006; g.add(back); }
+  else if (s.poly) {   // polygon floor/roof: always backed so the corners outside the grid look closed
     const back = new THREE.Mesh(new THREE.CircleGeometry(s.poly.R, s.poly.N, s.poly.start), bezelMat);
     back.position.z = -0.006;
     g.add(back);
@@ -527,62 +567,48 @@ function buildSurface(s) {
     back.position.z = -0.006;
     g.add(back);
   }
-  const [sw, sh] = s.size;
-  const tw = (sw - bezel * (cols + 1)) / cols;
-  const th = (sh - bezel * (rows + 1)) / rows;
-  const made = [];
-  for (let r = 0; r < rows; r++) for (let c = 0; c < cols; c++) {
-    const m = new THREE.Mesh(new THREE.PlaneGeometry(tw, th), placeholder);
-    m.position.set(-sw / 2 + bezel + tw / 2 + c * (tw + bezel),
-                    sh / 2 - bezel - th / 2 - r * (th + bezel), 0);
-    g.add(m);
-    const outline = [[-tw / 2, -th / 2], [tw / 2, -th / 2], [tw / 2, th / 2], [-tw / 2, th / 2]];
-    const hit = new THREE.Mesh(new THREE.PlaneGeometry(tw, th), placeholder);   // full tile under the (possibly clipped) video
-    hit.position.copy(m.position); hit.position.z = -0.001;
-    g.add(hit);
-    const hl = makeRing(outline, RING_W);
-    hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
-    g.add(hl);
-    const icon = makeIcon(); icon.position.copy(m.position); g.add(icon);
-    const tile = { mesh: m, w: tw, h: th, video: null, label: '', highlight: hl, icon, surface: s.key, outline, poly: outline, hit, shapePts: null };
-    fitTile(tile, 16 / 9);
-    tiles.push(tile); tileOf.set(m, tile); tileOf.set(hit, tile); made.push(tile);
+  let root = layouts[s.key];
+  if (!root) {
+    root = { poly: surfacePoly(s), children: [], parent: null, tile: null };
+    const n0 = startCount(s);
+    if (n0 > 1) root.children = Array.from({ length: n0 }, () => leafNode(root));
+    layouts[s.key] = root;
   }
-  return made;
+  rebuildNode(root);
+  return leavesOf(root).map(L => makeLeafTile(L, g, bezel, s.key));
 }
 
-// One polyhedron face: dark backing polygon, then level² (or fan × (level-1)²) polygon screens.
-function buildFaceTiles(s, g, level, bezel) {
-  const back = new THREE.Mesh(shapeGeometry(s.pts), bezelMat);
-  back.position.z = -0.006;
-  g.add(back);
-  const made = [];
-  for (const piece of splitPolygon(s.pts, level)) {
-    const c = polyCentroid(piece);
-    let pts = piece.map(p => [p[0] - c[0], p[1] - c[1]]);
-    // ensure counter-clockwise, then inset by the bezel (scale about the centroid)
-    let area = 0; for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; area += a[0] * b[1] - b[0] * a[1]; }
-    if (area < 0) pts.reverse();
-    const inr = Math.sqrt(Math.abs(area) / 2 / Math.PI);       // rough inradius for the inset
+// One screen for a leaf of the layout tree: polygon mesh centred on its centroid, inset by the bezel.
+function makeLeafTile(L, g, bezel, key) {
+  const c = polyCentroid(L.poly);
+  let pts = L.poly.map(p => [p[0] - c[0], p[1] - c[1]]);
+  if (polyArea(pts) < 0) pts.reverse();
+  if (isRect(pts)) {   // exact inset, so neighbouring cells are a full bezel apart
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    const hw = Math.max(0.02, Math.max(...xs) - bezel / 2), hh = Math.max(0.02, Math.max(...ys) - bezel / 2);
+    pts = [[-hw, -hh], [hw, -hh], [hw, hh], [-hw, hh]];
+  } else {             // scale about the centroid by a rough inradius
+    const inr = Math.sqrt(polyArea(pts) / 2 / Math.PI);
     const k = Math.max(0.5, 1 - bezel / Math.max(inr, 0.05));
     pts = pts.map(p => [p[0] * k, p[1] * k]);
-    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
-    const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
-    const m = new THREE.Mesh(shapeGeometry(pts), placeholder);
-    m.position.set(c[0], c[1], 0);
-    g.add(m);
-    const hit = new THREE.Mesh(shapeGeometry(pts), placeholder);   // full piece: shows where the video is clipped, and catches the beam there
-    hit.position.copy(m.position); hit.position.z = -0.001;
-    g.add(hit);
-    const hl = makeRing(pts, RING_W);
-    hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
-    g.add(hl);
-    const icon = makeIcon(); icon.position.copy(m.position); g.add(icon);
-    const tile = { mesh: m, w, h, video: null, label: '', highlight: hl, icon, surface: s.key, poly: pts, outline: pts, hit, shapePts: pts };
-    fitTile(tile, 16 / 9);
-    tiles.push(tile); tileOf.set(m, tile); tileOf.set(hit, tile); made.push(tile);
   }
-  return made;
+  const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+  const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+  const m = new THREE.Mesh(shapeGeometry(pts), placeholder);
+  m.position.set(c[0], c[1], 0);
+  g.add(m);
+  const hit = new THREE.Mesh(shapeGeometry(pts), placeholder);   // full piece: shows where the video is clipped, and catches the beam there
+  hit.position.copy(m.position); hit.position.z = -0.001;
+  g.add(hit);
+  const hl = makeRing(pts, RING_W);
+  hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
+  g.add(hl);
+  const icon = makeIcon(); icon.position.copy(m.position); g.add(icon);
+  const tile = { mesh: m, w, h, video: null, label: '', highlight: hl, icon, surface: key, poly: pts, outline: pts, hit, shapePts: pts, node: L };
+  L.tile = tile;
+  fitTile(tile, 16 / 9);
+  tiles.push(tile); tileOf.set(m, tile); tileOf.set(hit, tile);
+  return tile;
 }
 
 function buildLayout() {
@@ -598,13 +624,8 @@ function buildLayout() {
   polyCentreY = 0;
   if (isPoly()) { const ph = polyhedron(shape, W, N); H = ph.top; polyCentreY = ph.centre.y; $('roomH').value = H.toFixed(1); }
   roomScale = 1; roomGroup.scale.setScalar(1); roomGroup.position.set(0, 0, 0); roomGroup.quaternion.identity();
-  for (const s of surfaces()) {
-    grids[s.key] = s.kind === 'face' ? { cols: Math.max(1, Math.min(4, +$('faceLevel').value || 1)), rows: 1, face: true } : {
-      cols: +$(s.kind === 'wall' ? 'wallCols' : 'flatCols').value,
-      rows: +$(s.kind === 'wall' ? 'wallRows' : 'flatRows').value,
-    };
-    buildSurface(s);
-  }
+  layouts = {};
+  for (const s of surfaces()) buildSurface(s);
   updateTileCount();
   if (library.length) dealRandom(); else applySources();
 }
@@ -615,45 +636,74 @@ function updateTileCount() {
   $('tileCount').textContent = `${tiles.length} screens · ${dims}`;
 }
 
-// Change the grid of ONE surface; other surfaces keep their videos.
-async function changeGrid(key, dCols, dRows) {
-  const g = grids[key]; if (!g) return;
-  if (g.face && dRows) return;
-  const cols = Math.max(1, Math.min(g.face ? 4 : 8, g.cols + dCols));
-  const rows = Math.max(1, Math.min(8, g.rows + dRows));
-  if (cols === g.cols && rows === g.rows) return;
-  g.cols = cols; g.rows = rows;
+// ---- Layout actions on one screen: add a sibling, remove this piece, split this piece ----
+// Only the changed container's subtree is rebuilt; its surviving screens keep their videos (and per-screen
+// view), a split piece's video goes to its first child, new pieces are dealt, and everything sweeps in about
+// the container's centre.
+async function layoutAction(tile, act) {
+  const t = tile.isFloat ? tile.origin : tile; if (!t || !t.node) return;
+  const node = t.node, p = node.parent;
+  let changed;
+  if (act === 'split' || (act === 'add' && !p)) { node.children = [leafNode(node), leafNode(node)]; changed = node; }
+  else if (act === 'add') { p.children.push(leafNode(p)); changed = p; }
+  else if (act === 'remove') {
+    if (!p) return;
+    p.children = p.children.filter(c => c !== node);
+    if (p.children.length === 1) {   // a group of one dissolves into its parent
+      const only = p.children[0];
+      p.children = only.children; for (const c of p.children) c.parent = p;
+      p.tile = only.tile;
+    }
+    changed = p;
+  }
+  if (changed) await restructure(t.surface, changed);
+}
+async function restructure(key, node) {
   unfocus(true); setFocus(null);
   for (const h of hands) h.hovered = null;
   mouseTile = null;
-  // Tear down this surface's tiles
-  const old = tiles.filter(t => t.surface === key);
-  tiles = tiles.filter(t => t.surface !== key);
+  rebuildNode(node);
+  const leaves = leavesOf(node);
+  const old = tiles.filter(t => t.surface === key && underNode(t.node, node));
+  // which old screen each new leaf inherits: its own, or its parent's when that parent was just split
+  const inherit = new Map();
+  for (const L of leaves) {
+    if (L.tile && old.includes(L.tile)) inherit.set(L, L.tile);
+    else if (L.parent && L.parent.tile && old.includes(L.parent.tile) && L === L.parent.children[0]) inherit.set(L, L.parent.tile);
+  }
+  for (const L of leaves) L.tile = null;
+  for (let n = node; n; n = n.parent) if (n.children.length) n.tile = null;
   for (const t of old) { cancelTransition(t); tileOf.delete(t.mesh); if (t.hit) tileOf.delete(t.hit); }
+  tiles = tiles.filter(t => !old.includes(t));
   const prev = ghosts.find(g => g.key === key); if (prev) dropGhost(prev);
-  const oldGroup = surfaceGroups[key];
-  const s = surfaces().find(x => x.key === key);
-  const made = buildSurface(s);
+  const g = surfaceGroups[key], bezel = $('bezel').checked ? 0.03 : 0;
+  const made = leaves.map(L => makeLeafTile(L, g, bezel, key));
+  const parts = t => [t.mesh, t.hit, t.highlight, t.icon, t.seam].filter(Boolean);
   let ghost = null;
   if (transScale() && old.length) {
     // the old screens stay, 4 mm behind, until every new screen has swept in
-    oldGroup.translateZ(-0.004);
-    for (const t of old) { t.highlight.visible = false; t.icon.visible = false; }
-    for (const c of surfaceGroups[key].children) if (c.material === bezelMat) c.visible = false;
+    const gg = new THREE.Group(); gg.position.z = -0.004; g.add(gg);
+    for (const t of old) { gg.add(...parts(t)); t.highlight.visible = false; t.icon.visible = false; }
     for (const t of made) { t.hit.visible = false; t.mesh.visible = false; }
-    ghost = { key, group: oldGroup, old, tiles: made, armed: false };
+    ghost = { key, group: gg, old, tiles: made, armed: false };
     ghosts.push(ghost);
   } else {
-    roomGroup.remove(oldGroup);
-    for (const t of old) retire(t.video, t.mesh.material);
+    for (const t of old) { g.remove(...parts(t)); retire(t.video, t.mesh.material); }
   }
-  const enter = ghost ? wipeIn(s.kind === 'face' ? polyCentroid(s.pts) : [0, 0]) : popIn;
-  // Fill the new tiles
+  const enter = ghost ? wipeIn(polyCentroid(node.poly)) : popIn;
+  const fresh = [];
+  leaves.forEach((L, i) => {
+    const t = made[i], src = inherit.get(L);
+    if (!src || !src.video) { fresh.push(t); return; }
+    const mat = src.mesh.material;
+    t.video = src.video; t.label = src.label; t.view = src.view ? { ...src.view } : null;
+    enterWith(t, src.video, mat, () => { t.mesh.material = mat; refitTile(t); }, enter);
+  });
   if (library.length) {
     const next = makeDealer(new Set(tiles.map(t => t.label)));
-    for (const t of made) { const e = next(); setTileSource(t, await urlFor(e), e.key, enter); }
+    for (const t of fresh) { const e = next(); setTileSource(t, await urlFor(e), e.key, enter); }
   } else if (sources.length) {
-    made.forEach((t, i) => { const src = sources[i % sources.length]; setTileSource(t, src.src, src.label, enter); });
+    fresh.forEach((t, i) => { const src = sources[i % sources.length]; setTileSource(t, src.src, src.label, enter); });
   }
   if (ghost) ghost.armed = true;
   updateTileCount();
@@ -669,7 +719,7 @@ const easeOut = t => 1 - Math.pow(1 - t, 3);
 const easeInOut = t => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2;
 const aspectOf = v => v && v.videoWidth ? v.videoWidth / v.videoHeight : 16 / 9;
 let transitions = [];   // [{ tile, video, mat, done, t0?, dur?, ease?, step? }]; t0 unset = waiting for a frame
-let ghosts = [];        // [{ key, group, old, tiles, armed }]: a surface's previous screens, kept until the new ones are in
+let ghosts = [];        // [{ key, group, old, tiles, armed }]: a container's previous screens, kept until the new ones are in
 function videoInUse(v) { return tiles.some(t => t.video === v) || transitions.some(a => a.video === v) || ghosts.some(g => g.old.some(t => t.video === v)); }
 function matInUse(m) { return tiles.some(t => t.mesh.material === m) || transitions.some(a => a.mat === m) || ghosts.some(g => g.old.some(t => t.mesh.material === m)) || floatMesh.material === m; }
 function retire(v, m) {
@@ -714,10 +764,8 @@ function wipeIn(pivot) {   // pivot in surface-group coordinates
 }
 function dropGhost(g) {
   ghosts = ghosts.filter(x => x !== g);
-  roomGroup.remove(g.group);
+  if (g.group.parent) g.group.parent.remove(g.group);
   for (const t of g.old) retire(t.video, t.mesh.material);
-  const ng = surfaceGroups[g.key];
-  if (ng) for (const c of ng.children) if (c.material === bezelMat) c.visible = true;
   for (const t of g.tiles) if (t.hit) t.hit.visible = true;
 }
 function dropAllTransitions() { for (const g of ghosts.slice()) dropGhost(g); for (const t of tiles) cancelTransition(t); }
@@ -1333,19 +1381,18 @@ const panelCanvas = document.createElement('canvas');
 panelCanvas.width = 1240; panelCanvas.height = 160;
 const BTN_W = 96, BTN_GAP = 10;
 // Button groups: grid (cols/rows, or split level on a polyhedron face), then zoom −/+ and reset for this screen.
-const GRID_BUTTONS = [
-  { label: '−', title: 'cols', dc: -1, dr: 0 }, { label: '+', title: 'cols', dc: 1, dr: 0 },
-  { label: '−', title: 'rows', dc: 0, dr: -1 }, { label: '+', title: 'rows', dc: 0, dr: 1 },
+// Layout: − removes this piece (its siblings re-flow), + adds a sibling, ⊞ splits this piece into two.
+const LAYOUT_BUTTONS = [
+  { label: '−', title: 'pieces', act: 'remove' }, { label: '+', title: 'pieces', act: 'add' }, { label: '⊞', title: 'split', act: 'split' },
 ];
 const ZOOM_BUTTONS = [{ label: '−', title: 'zoom', dz: -1 }, { label: '+', title: 'zoom', dz: 1 }, { label: '↺', title: 'reset', reset: true }];
 const LIKE_BUTTON = { label: '♥', title: 'like', like: true };
 let panelBtns = [];          // current layout: buttons with x0/x1 (canvas px)
 let panelHoverBtn = -1;
-function panelLayout(g) {
+function panelLayout() {
   const out = [];
   let x = 124;
-  const grid = g && g.face ? GRID_BUTTONS.slice(0, 2) : GRID_BUTTONS;
-  grid.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP; });
+  LAYOUT_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP; });
   x += 150;                                   // room for the zoom value
   ZOOM_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W, zoomX: x }); x += BTN_W + BTN_GAP; });
   x += 26; out.push({ ...LIKE_BUTTON, x0: x, x1: x + BTN_W });
@@ -1383,7 +1430,7 @@ function pressPanelButton(tile, idx) {
     t.view = { zoom, dx: t.view ? t.view.dx : 0, dy: t.view ? t.view.dy : 0 };
     refitTile(t); drawPanel(tile); return;
   }
-  if (t.surface) changeGrid(t.surface, b.dc, b.dr);
+  if (b.act) layoutAction(t, b.act);
 }
 const panelCtx = panelCanvas.getContext('2d');
 const panelTex = new THREE.CanvasTexture(panelCanvas);
@@ -1394,15 +1441,16 @@ panelMesh.renderOrder = 30; panelMesh.visible = false;
 function drawPanel(tile) {
   const c = panelCtx, Wc = panelCanvas.width, Hc = panelCanvas.height;
   const src = tile.isFloat ? tile.origin : tile;
-  const g = src && grids[src.surface];
-  panelBtns = panelLayout(g);
+  const node = src && src.node, siblings = node ? (node.parent ? node.parent.children.length : 1) : 0;
+  let depth = 0; for (let n = node; n && n.parent; n = n.parent) depth++;
+  panelBtns = panelLayout();
   const wide = panelBtns[panelBtns.length - 1].x1 + 20;
   c.clearRect(0, 0, Wc, Hc);
   c.fillStyle = 'rgba(0,0,0,0.7)';
   c.beginPath(); c.roundRect(0, 0, wide, Hc, 24); c.fill();
   c.textBaseline = 'middle'; c.textAlign = 'center';
   c.fillStyle = '#ddd'; c.font = 'bold 40px system-ui, sans-serif';
-  c.fillText(g ? (g.face ? `L${g.cols}` : `${g.cols}×${g.rows}`) : '', 62, 90);
+  c.fillText(node ? `${siblings}${depth > 1 ? '·' + depth : ''}` : '', 62, 90);   // siblings in this piece's group (· nesting depth)
   // zoom value for this screen (relative to "whole video visible"); custom values are marked
   const fit = src && src.fit, zoom = fit ? (src.view && src.view.zoom != null ? src.view.zoom : fit.zoomDefault) : 0;
   const zb = panelBtns.find(b => b.dz);
@@ -1413,9 +1461,10 @@ function drawPanel(tile) {
   panelBtns.forEach((b, i) => {
     c.fillStyle = i === panelHoverBtn ? '#4aa8ff' : '#2e2e2e';
     c.beginPath(); c.roundRect(b.x0, 44, BTN_W, 88, 14); c.fill();
-    c.fillStyle = b.like ? (liked ? '#ff4a6a' : '#777') : '#fff'; c.font = 'bold 56px system-ui, sans-serif';
+    const off = b.act === 'remove' && !(node && node.parent);   // the only piece of a surface cannot be removed
+    c.fillStyle = b.like ? (liked ? '#ff4a6a' : '#777') : off ? '#666' : '#fff'; c.font = 'bold 56px system-ui, sans-serif';
     c.fillText(b.label, b.x0 + BTN_W / 2, 88);
-    const title = b.dc !== undefined && g && g.face ? 'split' : b.title;
+    const title = b.title;
     if (!labelled.has(title)) {
       labelled.add(title);
       c.fillStyle = '#aaa'; c.font = '26px system-ui, sans-serif';

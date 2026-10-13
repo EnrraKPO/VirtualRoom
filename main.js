@@ -423,8 +423,8 @@ function setRingProgress(ring, progress) {
 // Sound icon: speaker (green = audible, grey with red cross = muted), pause bars when paused.
 const ICON_DEG = 2.6, ICON_LIFT = 0.06;   // apparent size (degrees) and how far it floats in front of the surface (m)
 const iconMats = {};
-function iconMaterial(audible, paused, top = false) {
-  const key = (audible ? 'a' : 'm') + (paused ? 'p' : '') + (top ? 't' : '');
+function iconMaterial(audible, paused, top = false, liked = false) {
+  const key = (audible ? 'a' : 'm') + (paused ? 'p' : '') + (top ? 't' : '') + (liked ? 'l' : '');
   if (iconMats[key]) return iconMats[key];
   const cv = document.createElement('canvas'); cv.width = cv.height = 128;
   const c = cv.getContext('2d');
@@ -435,6 +435,10 @@ function iconMaterial(audible, paused, top = false) {
   if (audible) { c.strokeStyle = '#4aff8a'; c.beginPath(); c.arc(74, 64, 18, -0.9, 0.9); c.stroke(); c.beginPath(); c.arc(74, 64, 30, -0.9, 0.9); c.stroke(); }
   else { c.strokeStyle = '#f55'; c.beginPath(); c.moveTo(80, 50); c.lineTo(106, 78); c.moveTo(106, 50); c.lineTo(80, 78); c.stroke(); }
   if (paused) { c.fillStyle = '#ffd24a'; c.fillRect(84, 86, 10, 30); c.fillRect(100, 86, 10, 30); }
+  if (liked) {   // small heart, bottom-left
+    c.fillStyle = '#ff4a6a'; c.beginPath();
+    c.moveTo(36, 112); c.bezierCurveTo(14, 96, 18, 72, 36, 80); c.bezierCurveTo(54, 72, 58, 96, 36, 112); c.fill();
+  }
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
   return iconMats[key] = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: !top });
 }
@@ -588,13 +592,8 @@ async function changeGrid(key, dCols, dRows) {
   const made = buildSurface(s);
   // Fill the new tiles
   if (library.length) {
-    const inUse = new Set(tiles.map(t => t.label));
-    let deck = shuffled(library.filter(e => !inUse.has(e.key)));
-    for (const t of made) {
-      if (!deck.length) deck = shuffled(library);
-      const e = deck.pop();
-      setTileSource(t, await urlFor(e), e.key);
-    }
+    const next = makeDealer(new Set(tiles.map(t => t.label)));
+    for (const t of made) { const e = next(); setTileSource(t, await urlFor(e), e.key); }
   } else if (sources.length) {
     made.forEach((t, i) => { const src = sources[i % sources.length]; setTileSource(t, src.src, src.label); });
   }
@@ -713,7 +712,7 @@ async function scanRoot(r) {
   out.sort((a, b) => a.rel.localeCompare(b.rel));
   // Keep object URLs of files that are still present (screens may be playing them); drop the rest.
   const prev = new Map(r.entries.map(e => [e.rel, e]));
-  for (const e of out) { e.key = `${r.id}:${e.rel}`; const o = prev.get(e.rel); if (o?.url) { e.url = o.url; prev.delete(e.rel); } }
+  for (const e of out) { e.key = `${r.id}:${e.rel}`; e.rootName = r.name; const o = prev.get(e.rel); if (o?.url) { e.url = o.url; prev.delete(e.rel); } }
   for (const o of prev.values()) if (o.url) URL.revokeObjectURL(o.url);
   r.entries = out;
 }
@@ -726,8 +725,66 @@ function scanSummary(r) {
 }
 function rebuildLibrary() {
   library = roots.filter(r => r.granted).flatMap(r => r.entries);
+  rebuildLikedKeys();
   renderRoots();
 }
+
+// ---- Likes: a single playlist of favourite videos, persisted with their file handles ----
+let likes = [];            // [{ handle, rootName, rel, name }]
+let likedKeys = new Set(); // library keys of liked videos that are currently available
+const likeId = e => `${e.rootName}|${e.rel}`;
+function rebuildLikedKeys() {
+  const ids = new Set(likes.map(likeId));
+  likedKeys = new Set(library.filter(e => ids.has(likeId(e))).map(e => e.key));
+  const n = likes.length, avail = likedKeys.size;
+  $('likeInfo').textContent = n ? `${n} liked${avail < n ? ` (${avail} available)` : ''}` : 'no liked videos yet';
+}
+const isLikedKey = key => likedKeys.has(key);
+const likedEntries = () => library.filter(e => likedKeys.has(e.key));
+async function persistLikes() { await kvSet('likes', likes.map(l => ({ handle: l.handle, rootName: l.rootName, rel: l.rel, name: l.name }))); }
+async function toggleLike(tile) {
+  const t = tile.isFloat ? tile.origin : tile; if (!t) return;
+  const e = library.find(x => x.key === t.label);
+  if (!e) { setStatus('Only library videos can be liked.'); return; }
+  const id = likeId(e), i = likes.findIndex(l => likeId(l) === id);
+  if (i >= 0) likes.splice(i, 1); else likes.push({ handle: e.handle, rootName: e.rootName, rel: e.rel, name: e.name });
+  rebuildLikedKeys();
+  await persistLikes();
+}
+// Put a random liked video (preferably one not already on a screen) on this tile
+async function deployLiked(tile) {
+  const t = tile.isFloat ? tile.origin : tile; if (!t) return;
+  const liked = likedEntries();
+  if (!liked.length) { setStatus('No liked videos available.'); return; }
+  const inUse = new Set(tiles.map(x => x.label));
+  let pool = liked.filter(e => e.key !== t.label && !inUse.has(e.key));
+  if (!pool.length) pool = liked.filter(e => e.key !== t.label);
+  if (!pool.length) pool = liked;
+  const e = pool[Math.floor(Math.random() * pool.length)];
+  setTileSource(t, await urlFor(e), e.key);
+  if (tile.isFloat) syncFloat();
+}
+// Dealing order per the "Deal" setting: all videos / liked first / liked only. Returns a function yielding entries.
+function makeDealer(exclude = new Set()) {
+  const mode = $('dealMode').value, liked = likedEntries();
+  const fresh = arr => shuffled(arr.filter(e => !exclude.has(e.key)));
+  let first = mode !== 'all' && liked.length ? fresh(liked) : [];
+  const restPool = mode === 'likedOnly' && liked.length ? liked : library;
+  let rest = [];
+  return () => {
+    if (first.length) return first.pop();
+    if (!rest.length) rest = fresh(restPool);
+    if (!rest.length) rest = shuffled(restPool);
+    return rest.pop();
+  };
+}
+$('clearLikes').addEventListener('click', async () => { likes = []; rebuildLikedKeys(); await persistLikes(); });
+$('exportLikes').addEventListener('click', () => {
+  const blob = new Blob([JSON.stringify(likes.map(l => ({ folder: l.rootName, path: l.rel, name: l.name })), null, 2)], { type: 'application/json' });
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'video-room-likes.json'; a.click();
+  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+});
+$('dealMode').addEventListener('change', () => kvSet('dealMode', $('dealMode').value));
 function renderRoots() {
   const box = $('roots'); box.innerHTML = '';
   const pending = roots.filter(r => !r.granted);
@@ -792,12 +849,8 @@ function shuffled(arr) {
 async function dealRandom() {
   if (!library.length) return;
   disposeVideos();
-  let deck = [];
-  for (const t of tiles) {
-    if (!deck.length) deck = shuffled(library);
-    const e = deck.pop();
-    setTileSource(t, await urlFor(e), e.key);
-  }
+  const next = makeDealer();
+  for (const t of tiles) { const e = next(); setTileSource(t, await urlFor(e), e.key); }
   setStatus(`${tiles.length} screens, ${videoEls.length} decoder(s) from ${library.length} library videos.`);
 }
 // Swap one tile to a random library video not currently on any screen (if possible)
@@ -850,6 +903,9 @@ async function hasPermission(r) {
   return true;
 }
 (async () => {
+  likes = (await kvGet('likes')) || [];
+  const dm = await kvGet('dealMode'); if (dm) $('dealMode').value = dm;
+  rebuildLikedKeys();
   let saved = await kvGet('roots');
   const legacy = await kvGet('folder');          // single-folder format from before multi-root support
   if (!saved && legacy) { saved = [{ kind: 'dir', handle: legacy, name: legacy.name, sub: true }]; await kvSet('roots', saved); await kvDel('folder'); }
@@ -1144,7 +1200,7 @@ setInterval(() => {
 // ---- Grid/split buttons: a small panel of fixed physical size, tucked into the hovered tile's bottom-right corner.
 const PANEL_DEG = 5.5, PANEL_MARGIN = 0.02;   // panel height as an angle at the eye (buttons ≈ 3°), margin in metres
 const panelCanvas = document.createElement('canvas');
-panelCanvas.width = 1100; panelCanvas.height = 160;
+panelCanvas.width = 1240; panelCanvas.height = 160;
 const BTN_W = 96, BTN_GAP = 10;
 // Button groups: grid (cols/rows, or split level on a polyhedron face), then zoom −/+ and reset for this screen.
 const GRID_BUTTONS = [
@@ -1152,6 +1208,7 @@ const GRID_BUTTONS = [
   { label: '−', title: 'rows', dc: 0, dr: -1 }, { label: '+', title: 'rows', dc: 0, dr: 1 },
 ];
 const ZOOM_BUTTONS = [{ label: '−', title: 'zoom', dz: -1 }, { label: '+', title: 'zoom', dz: 1 }, { label: '↺', title: 'reset', reset: true }];
+const LIKE_BUTTON = { label: '♥', title: 'like', like: true };
 let panelBtns = [];          // current layout: buttons with x0/x1 (canvas px)
 let panelHoverBtn = -1;
 function panelLayout(g) {
@@ -1161,6 +1218,7 @@ function panelLayout(g) {
   grid.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP; });
   x += 150;                                   // room for the zoom value
   ZOOM_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W, zoomX: x }); x += BTN_W + BTN_GAP; });
+  x += 26; out.push({ ...LIKE_BUTTON, x0: x, x1: x + BTN_W });
   return out;
 }
 function panelButtonAt(uv) {
@@ -1175,6 +1233,7 @@ function pressPanelButton(tile, idx) {
   const t = tile.isFloat ? tile.origin : tile;
   if (!t) return;
   if (b.reset) { resetView(t); drawPanel(tile); return; }
+  if (b.like) { toggleLike(t).then(() => drawPanel(tile)); return; }
   if (b.dz) {
     if (!t.fit) return;
     const z0 = t.view && t.view.zoom != null ? t.view.zoom : t.fit.zoomDefault;
@@ -1207,10 +1266,11 @@ function drawPanel(tile) {
   const zb = panelBtns.find(b => b.dz);
   c.fillText(fit ? `${zoom.toFixed(2)}×${src.view ? '*' : ''}` : '', zb.x0 - 80, 90);
   let labelled = new Set();
+  const liked = src && isLikedKey(src.label);
   panelBtns.forEach((b, i) => {
     c.fillStyle = i === panelHoverBtn ? '#4aa8ff' : '#2e2e2e';
     c.beginPath(); c.roundRect(b.x0, 44, BTN_W, 88, 14); c.fill();
-    c.fillStyle = '#fff'; c.font = 'bold 56px system-ui, sans-serif';
+    c.fillStyle = b.like ? (liked ? '#ff4a6a' : '#777') : '#fff'; c.font = 'bold 56px system-ui, sans-serif';
     c.fillText(b.label, b.x0 + BTN_W / 2, 88);
     const title = b.dc !== undefined && g && g.face ? 'split' : b.title;
     if (!labelled.has(title)) {
@@ -1271,6 +1331,57 @@ function placePanel(tile) {
   if (band) panelMesh.position.set(tile.mesh.position.x + band.xr - m - pw / 2, tile.mesh.position.y + band.y + m + ph / 2, 0.005);
   else panelMesh.position.set(tile.mesh.position.x, tile.mesh.position.y, 0.005);
 }
+// ---- Station board: a small table that follows you at waist height, below the straight-ahead view.
+// Faint until you look at it or point at it. Its slots are drag sources: drag "Deploy favourite" onto a screen.
+const BOARD_W = 0.5, BOARD_H = 0.25, BOARD_AHEAD = 0.55, BOARD_DROP = 0.9, BOARD_TILT = THREE.MathUtils.degToRad(-55);
+const board = new THREE.Group();
+scene.add(board);
+const boardMat = new THREE.MeshBasicMaterial({ color: 0x101418, transparent: true, opacity: 0.3, depthTest: false, depthWrite: false });
+const boardMesh = new THREE.Mesh(new THREE.PlaneGeometry(BOARD_W, BOARD_H), boardMat);
+boardMesh.renderOrder = 25;
+board.add(boardMesh);
+function slotTexture(draw) {
+  const cv = document.createElement('canvas'); cv.width = cv.height = 256;
+  const c = cv.getContext('2d');
+  c.fillStyle = '#2a2f36'; c.beginPath(); c.roundRect(8, 8, 240, 240, 36); c.fill();
+  draw(c);
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace; return tex;
+}
+const deploySlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, map: slotTexture(c => {
+  c.fillStyle = '#ff4a6a'; c.beginPath();                                        // heart
+  c.moveTo(128, 190); c.bezierCurveTo(40, 130, 60, 50, 128, 95); c.bezierCurveTo(196, 50, 216, 130, 128, 190); c.fill();
+  c.fillStyle = '#fff'; c.font = 'bold 30px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('deploy →', 128, 225);
+}) });
+const deploySlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), deploySlotMat);
+deploySlot.position.set(-BOARD_W / 2 + 0.09, 0, 0.002); deploySlot.renderOrder = 26;
+board.add(deploySlot);
+const BOARD_SLOT = { isBoard: true, label: '' };   // drag source sentinel for the deploy slot
+const _bf = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bm = new THREE.Matrix4();
+let boardYaw = null, boardHot = false;
+function updateBoard(dt) {
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(_eye);
+  cam.getWorldDirection(_bf);
+  const yaw = Math.atan2(_bf.x, _bf.z);
+  if (boardYaw === null) boardYaw = yaw;
+  let d = yaw - boardYaw; d = Math.atan2(Math.sin(d), Math.cos(d));
+  boardYaw += d * Math.min(1, dt * 4);                                        // lazy follow
+  const fx = Math.sin(boardYaw), fz = Math.cos(boardYaw);
+  board.position.set(_eye.x + fx * BOARD_AHEAD, _eye.y - BOARD_DROP, _eye.z + fz * BOARD_AHEAD);
+  _bm.lookAt(_eye, board.position, new THREE.Vector3(0, 1, 0));                // +z toward the viewer
+  board.quaternion.setFromRotationMatrix(_bm);
+  _bq.setFromAxisAngle(new THREE.Vector3(1, 0, 0), BOARD_TILT);
+  board.quaternion.multiply(_bq);
+  // looking at it (within ~25° of the gaze) or pointing at it: opaque; otherwise faint
+  _bq.identity();
+  const toBoard = board.position.clone().sub(_eye).normalize();
+  const gazing = toBoard.dot(_bf) > Math.cos(THREE.MathUtils.degToRad(25));
+  const target = gazing || boardHot ? 1 : 0.3;
+  boardMat.opacity += (target - boardMat.opacity) * Math.min(1, dt * 8);
+  deploySlotMat.opacity = boardMat.opacity;
+}
+
 // Per-frame HUD: contour progress on the hovered screen, floating sound icons on hovered or audible screens.
 const _iw = new THREE.Vector3();
 function updateHud() {
@@ -1286,7 +1397,7 @@ function updateHud() {
     const show = t === focusTile || (v && !v.muted && !(focused && t === focused));
     if (!show) { t.icon.visible = false; continue; }
     t.icon.visible = true;
-    t.icon.material = iconMaterial(v && !v.muted, v && v.paused, t.isFloat);
+    t.icon.material = iconMaterial(v && !v.muted, v && v.paused, t.isFloat, isLikedKey(t.label));
     t.mesh.getWorldPosition(_iw);
     const size = 2 * _eye.distanceTo(_iw) * Math.tan(THREE.MathUtils.degToRad(ICON_DEG / 2)) * (t === focusTile ? 1 : 0.7);
     if (t.isFloat) {   // unit space inside floatGroup
@@ -1344,12 +1455,13 @@ function updateHand(hand, dt, now) {
   raycaster.ray.origin.setFromMatrixPosition(hand.ctrl.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
   const hit = raycaster.intersectObjects(rayTargets(), false)[0];
-  const onPanel = hit && hit.object === panelMesh;
-  const tile = hit ? (onPanel ? focusTile : tileFor(hit.object)) : null;
+  const onPanel = hit && hit.object === panelMesh, onSlot = hit && hit.object === deploySlot;
+  const tile = hit ? (onPanel ? focusTile : onSlot ? null : tileFor(hit.object)) : null;
   if (hit) { hand.dot.position.copy(hit.point); hand.dot.visible = true; hand.beam.scale.z = hit.distance; }
   else { hand.dot.visible = false; hand.beam.scale.z = 10; }
   if (tile && tile !== hand.hovered) setFocus(tile);
   hand.hovered = tile;
+  hand.onSlot = onSlot;
   // Beam point in the tile's own plane (metres from the tile centre), for in-screen drags
   let lx = 0, ly = 0;
   if (tile && !onPanel) {
@@ -1415,8 +1527,9 @@ function updateHand(hand, dt, now) {
   // Press on a screen starts a potential drag; release decides: same screen = tap action,
   // different screen = two-screen action (trigger drag = swap places, grip drag = copy).
   if (trigger && !p.trigger && tile) startDrag(hand, 'swap', tile, now, lx, ly, hit);
+  if (trigger && !p.trigger && onSlot) startDrag(hand, 'liked', BOARD_SLOT, now);
   if (grip && !p.grip && tile) startDrag(hand, 'copy', tile, now, lx, ly, hit);
-  if (!trigger && p.trigger && hand.drag && hand.drag.kind === 'swap') endDrag(hand, tile, now);
+  if (!trigger && p.trigger && hand.drag && (hand.drag.kind === 'swap' || hand.drag.kind === 'liked')) endDrag(hand, tile, now);
   if (!grip && p.grip && hand.drag && hand.drag.kind === 'copy') endDrag(hand, tile, now);
 
   if (tile && primary && !p.primary) togglePause(tile);
@@ -1513,7 +1626,7 @@ function cancelDrag(hand) {
   hand.beam.material.color.setHex(DRAG_COLORS.idle);
 }
 
-const DRAG_COLORS = { swap: 0xffa040, copy: 0x4aff8a, idle: 0x4aa8ff };
+const DRAG_COLORS = { swap: 0xffa040, copy: 0x4aff8a, idle: 0x4aa8ff, liked: 0xff4a6a };
 const _lp = new THREE.Vector3();
 function startDrag(hand, kind, tile, now, lx = 0, ly = 0, hit = null) {
   hand.drag = { kind, from: tile, t0: now, x0: lx, y0: ly, view0: tile.view ? { ...tile.view } : null, adjusted: false, left: false };
@@ -1551,6 +1664,7 @@ function adjustFloat(hand, tile, lx, ly, hit) {
 }
 function adjustDrag(hand, tile, lx, ly, hit) {
   const d = hand.drag, f = d.from;
+  if (f.isBoard) return;
   if (f.isFloat) return adjustFloat(hand, tile, lx, ly, hit);
   if (!f.fit) return;
   if (tile !== f) { if (d.adjusted) { f.view = d.view0; refitTile(f); d.adjusted = false; } d.left = true; return; }
@@ -1567,6 +1681,7 @@ function endDrag(hand, target, now) {
   const { kind, from, t0, adjusted } = hand.drag;
   hand.drag = null;
   hand.beam.material.color.setHex(DRAG_COLORS.idle);
+  if (kind === 'liked') { if (target) deployLiked(target); return; }   // dragged from the station board
   if (adjusted) return;   // the press was a pan/zoom (or a reset): no tap or two-screen action
   if (target && target !== from) {
     if (kind === 'swap') swapPlaces(from, target); else copyTo(from, target);
@@ -1579,6 +1694,7 @@ function rayTargets() {
   for (const x of tiles) if (x.hit) t.push(x.hit);
   if (focused && !anim) t.push(floatMesh);
   if (panelMesh.visible) t.unshift(panelMesh);   // button panel sits in front of its tile; test it first
+  if (renderer.xr.isPresenting) t.unshift(deploySlot);   // station board slot (VR only)
   return t;
 }
 function tileFor(obj) { return obj === floatMesh ? floatTile : tileOf.get(obj); }
@@ -1692,5 +1808,7 @@ renderer.setAnimationLoop(() => {
   if (renderer.xr.isPresenting) for (const h of hands) updateHand(h, dt, now);
   else { updateMouse(); updateDesktopWalk(dt); }
   updateHud();
+  updateBoard(dt);
+  boardHot = hands.some(h => h.onSlot || (h.drag && h.drag.kind === 'liked'));
   renderer.render(scene, camera);
 });

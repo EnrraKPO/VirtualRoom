@@ -112,6 +112,16 @@
       <div id="roots"></div>
       <div id="libInfo"></div>
       <div class="row">
+        Deal <select id="dealMode">
+          <option value="all">all videos</option>
+          <option value="likedFirst">liked first, then the rest</option>
+          <option value="likedOnly">liked only</option>
+        </select>
+        <span id="likeInfo"></span>
+        <button id="exportLikes">Export likes</button>
+        <button id="clearLikes">Clear likes</button>
+      </div>
+      <div class="row">
         <button id="useSample">Use sample video</button>
       </div>
       <label><input type="checkbox" id="randomStart" checked /> Start each video at a random point</label>

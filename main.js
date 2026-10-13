@@ -1343,7 +1343,7 @@ function syncShapeFields() {
   $('hField').style.display = poly ? 'none' : '';
   $('wLabel').textContent = box ? 'W' : 'Across';
   $('faceRow').style.display = poly ? '' : 'none';
-  $('cropRow').style.display = poly ? '' : 'none';
+  $('cropRow').style.display = '';   // every shape fits videos to polygons now, so crop / fill apply everywhere
   syncNestFields();
   $('wallRow').style.display = poly ? 'none' : '';
   $('flatRow').style.display = poly ? 'none' : '';

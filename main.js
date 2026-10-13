@@ -1358,10 +1358,22 @@ function panelButtonAt(uv) {
   return panelBtns.findIndex(b => x >= b.x0 - 5 && x <= b.x1 + 5);
 }
 const ZOOM_STEP = 1.25;
+// Focus screen size limits (metres wide) for the panel buttons and grip-drag
+const FLOAT_W_MIN = 0.1, FLOAT_W_MAX = 60;
+function resetFloatPose() { const to = focusTarget(); floatGroup.position.copy(to.p); floatGroup.quaternion.copy(to.q); floatGroup.scale.copy(to.s); floatTile.custom = false; }
+function scaleFloat(w) {
+  w = Math.max(FLOAT_W_MIN, Math.min(FLOAT_W_MAX, w));
+  floatGroup.scale.set(w, w * floatGroup.scale.y / floatGroup.scale.x, 1);
+  floatTile.custom = true;
+}
 function pressPanelButton(tile, idx) {
   const b = panelBtns[idx]; if (!b) return;
   const t = tile.isFloat ? tile.origin : tile;
   if (!t) return;
+  if (tile.isFloat && (b.reset || b.dz)) {   // on the focus screen, zoom buttons scale the floating screen itself
+    if (b.reset) resetFloatPose(); else scaleFloat(floatGroup.scale.x * Math.pow(ZOOM_STEP, b.dz));
+    drawPanel(tile); return;
+  }
   if (b.reset) { resetView(t); drawPanel(tile); return; }
   if (b.like) { toggleLike(t).then(() => drawPanel(tile)); return; }
   if (b.dz) {
@@ -1394,7 +1406,8 @@ function drawPanel(tile) {
   // zoom value for this screen (relative to "whole video visible"); custom values are marked
   const fit = src && src.fit, zoom = fit ? (src.view && src.view.zoom != null ? src.view.zoom : fit.zoomDefault) : 0;
   const zb = panelBtns.find(b => b.dz);
-  c.fillText(fit ? `${zoom.toFixed(2)}×${src.view ? '*' : ''}` : '', zb.x0 - 80, 90);
+  if (tile.isFloat) c.fillText(`${floatGroup.scale.x.toFixed(floatGroup.scale.x < 10 ? 1 : 0)} m${floatTile.custom ? '*' : ''}`, zb.x0 - 80, 90);
+  else c.fillText(fit ? `${zoom.toFixed(2)}×${src.view ? '*' : ''}` : '', zb.x0 - 80, 90);
   let labelled = new Set();
   const liked = src && isLikedKey(src.label);
   panelBtns.forEach((b, i) => {
@@ -1647,7 +1660,7 @@ function updateHand(hand, dt, now) {
   if (!trigger && p.trigger) hand.turning = false;
   if (grip && stick && !p.stick) recentre();                            // grip + stick click = back to centre
   else if (hand.drag && hand.drag.kind === 'swap' && stick && !p.stick) {   // stick click while trigger-dragging = reset pan/zoom (or the float's pose)
-    if (hand.drag.from.isFloat) { const to = focusTarget(); floatGroup.position.copy(to.p); floatGroup.quaternion.copy(to.q); floatGroup.scale.copy(to.s); floatTile.custom = false; }
+    if (hand.drag.from.isFloat) resetFloatPose();
     else resetView(hand.drag.from);
     hand.drag.adjusted = true;
   }
@@ -1788,8 +1801,7 @@ function adjustFloat(hand, tile, lx, ly, hit) {
     floatGroup.quaternion.setFromRotationMatrix(new THREE.Matrix4().lookAt(_eye, floatGroup.position, new THREE.Vector3(0, 1, 0)));
   } else {
     const k = Math.pow(2, (floatUp(hit.point) - d.up0) / d.s0.y);
-    const w = Math.max(0.3, Math.min(12, d.s0.x * k));
-    floatGroup.scale.set(w, w * d.s0.y / d.s0.x, 1);
+    scaleFloat(d.s0.x * k);
   }
 }
 function adjustDrag(hand, tile, lx, ly, hit) {

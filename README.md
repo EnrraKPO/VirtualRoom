@@ -54,7 +54,7 @@ the sound icon even when not pointed at.
 | A / X | pause / play |
 | B / Y | focus: lift the screen off the wall into a big floating panel; again to send it back |
 | Stick click | jump to a random point in the timeline |
-| Panel buttons | − / + columns and rows for **that wall only** (other walls keep playing); on a polyhedron face − / + change its split level. Zoom − / + (×1.25 per press) and ↺ reset apply to **that screen only** |
+| Panel buttons | − / + columns and rows for **that wall only** (other walls keep playing); on a polyhedron face − / + change its split level. Zoom − / + (×1.25 per press) and ↺ reset apply to **that screen only**. On the focus screen the same buttons scale the floating screen itself (0.1–60 m wide, the width is shown) and ↺ puts it back to its default pose |
 
 **Station board**: a small table that follows you at waist height, just below the straight-ahead
 view (look down to see it; faint until you look at it or point at it). Drag its ♥ "deploy" slot onto
@@ -76,7 +76,7 @@ any screen to put a random liked video there.
 | Stick click while trigger-dragging | reset that screen to the crop setting |
 
 On the **focus screen** the same drags move it (trigger: the grabbed point follows the beam, the
-screen keeps facing you) and scale it (grip: beam up = bigger, 0.3–12 m wide); stick click while
+screen keeps facing you) and scale it (grip: beam up = bigger, 0.1–60 m wide, same as the panel's − / +); stick click while
 trigger-dragging puts it back to its default pose. The focus screen always draws on top of the room.
 
 A screen you have adjusted keeps its own zoom and offset (the crop setting no longer applies to

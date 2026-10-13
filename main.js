@@ -260,17 +260,17 @@ function leftoverPieces(poly, r) {
 // Nested copies: fit a smaller copy of the video into a leftover piece (same rule as the face, more crop per level),
 // then recurse into that piece's own leftovers. Pieces too small or too slim get the fallback: mirrored continuation
 // of the enclosing video (with seam lines) or blank.
-const NEST_MIN_W = 0.12, NEST_MIN_FRAC = 0.2, NEST_MAX_CROP = 0.6;
+const NEST_MIN_W = 0.12, NEST_MIN_FRAC = 0.2, NEST_MAX_SLIM = 4;   // min copy width (m, fraction of main), max piece bbox aspect
 function nestFill(piece, parent, level, o, regions, mirrors) {
   const fallback = () => { if (o.fallback === 'mirror') { const r = { poly: piece, cx: parent.cx, cy: parent.cy, vw: parent.vw, vh: parent.vh }; regions.push(r); mirrors.push(r); } };
   if (level > o.depth) return fallback();
   const xs = piece.map(p => p[0]), ys = piece.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   const bw = x1 - x0, bh = y1 - y0, bx = (x0 + x1) / 2, by = (y0 + y1) / 2;
+  if (bw < 1e-6 || bh < 1e-6 || Math.max(bw / bh, bh / bw) > NEST_MAX_SLIM) return fallback();   // a sliver
   const ins = inscribedRect(piece, o.aspect, 12);
   if (ins.w <= 0) return fallback();
   const cover = Math.max(bw, bh * o.aspect), coverRatio = Math.max(1, cover / ins.w);
-  if (1 - 1 / coverRatio > NEST_MAX_CROP) return fallback();              // too slim: covering it would crop too much
   const crop = Math.min(1, o.crop + o.inc * level);
   const zoom = crop >= 1 ? coverRatio : Math.min(coverRatio, 1 / (1 - crop));
   const vw = ins.w * zoom, vh = vw / o.aspect;

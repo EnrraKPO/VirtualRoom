@@ -60,7 +60,10 @@ the sound icon even when not pointed at.
 view (look down to see it; faint until you look at it or point at it). Drag its ♥ "deploy" slot onto
 any screen to put a random liked video there. Tap its "shuffle" slot (trigger press and release on it)
 to redeal every screen except the pinned ones. Its "lift" slot (lit only while an override is up) lifts
-the override. On desktop the slots work with the mouse: click shuffle or lift, drag deploy ♥ onto a screen.
+the override. Hold the trigger on "shuffle ♥" for 0.7 s (a red bar fills under it) to put a random liked
+video on every screen except the pinned ones; this draws on every like, including videos whose folder is
+not currently loaded (opened from the stored file handle; ones the browser refuses are counted in the status
+line and skipped). Dismissed likes are left out. On desktop the slots work with the mouse: click shuffle or lift, drag deploy ♥ onto a screen.
 
 **Drag (press on one screen, release on another)**
 
@@ -144,8 +147,11 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   `{ video, mat, label, view, wasPlaying }` into `override.saved`, puts the source material on all of them via
   `enterWith`, pausing each saved video once its pop has covered it; `liftOverride()` restores tiles that still
   show the override material (resuming paused videos), retires the rest, and `overrideBlocks()` guards the
-  structural / dealing actions. Board slots carry `userData.slot`; `tapSlot(kind)` serves both the VR trigger
-  tap and desktop clicks (`mouseSlot`, `mouseSlotDrag` for deploy ♥ with the mouse).
+  structural / dealing actions. Board slots carry `userData.slot` (and `userData.hold` for hold slots, with the
+  `slotBar` progress mesh via `setSlotHold()`); `tapSlot(kind)` serves VR taps/holds and desktop clicks/holds
+  (`mouseSlot`, `mouseSlotDrag` for deploy ♥ with the mouse, `mouseSlotHold`). `shuffleLikes()` deals from
+  `likePool()`: library likes plus pseudo entries (`key: 'like:<id>'`, cached in `extraLikeEntries`) for likes
+  outside the library, opened through their handles.
 - **Transitions**: `setTileSource()` / `swapPlaces()` / `copyTo()` never put the new material on the mesh
   directly; they call `enterWith(tile, video, mat, finish, enter)`, which waits for the video to have a frame
   (`loadeddata`) and then runs the entrance: `popIn` (overlay mesh with the new fit, scaled 0 → 1 over the

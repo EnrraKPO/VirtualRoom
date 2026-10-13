@@ -924,6 +924,7 @@ const likeId = e => `${e.rootName}|${e.rel}`;
 function rebuildLikedKeys() {
   const ids = new Set(likes.map(likeId));
   likedKeys = new Set(library.filter(e => ids.has(likeId(e))).map(e => e.key));
+  for (const l of likes) likedKeys.add('like:' + likeId(l));   // screens showing a like from outside the library
   const n = likes.length, avail = likedKeys.size;
   $('likeInfo').textContent = n ? `${n} liked${avail < n ? ` (${avail} available)` : ''}` : 'no liked videos yet';
   rebuildPinnedKeys();
@@ -1041,6 +1042,45 @@ async function dismissTile(tile) {
 }
 $('showDismissed').addEventListener('click', () => { const l = $('dismissedList'); l.style.display = l.style.display === 'none' ? '' : 'none'; });
 $('clearDismissed').addEventListener('click', async () => { dismissed = []; rebuildDismissedKeys(); await persistDismissed(); });
+// ---- Shuffle likes: every screen except pinned ones gets a random liked video. Likes whose folder is not in the
+// library are opened straight from their stored file handle (skipped if the browser refuses access).
+const extraLikeEntries = new Map();   // likeId -> pseudo entry { handle, key: 'like:<id>', name, rootName, rel, url? }
+async function likePool() {
+  const dismissedIds = new Set(dismissed.map(likeId));
+  const pool = likedEntries().slice(), inLib = new Set(library.map(likeId));
+  let refused = 0;
+  for (const l of likes) {
+    const id = likeId(l);
+    if (inLib.has(id) || dismissedIds.has(id) || !l.handle) continue;
+    let e = extraLikeEntries.get(id);
+    if (!e) {
+      try {
+        if (l.handle.queryPermission && await l.handle.queryPermission({ mode: 'read' }) !== 'granted'
+            && await l.handle.requestPermission({ mode: 'read' }) !== 'granted') { refused++; continue; }
+        e = { handle: l.handle, key: 'like:' + id, name: l.name, rootName: l.rootName, rel: l.rel };
+        extraLikeEntries.set(id, e);
+      } catch { refused++; continue; }
+    }
+    pool.push(e);
+  }
+  return { pool, refused };
+}
+async function shuffleLikes() {
+  if (overrideBlocks()) return;
+  const { pool, refused } = await likePool();
+  if (!pool.length) { setStatus('No liked videos available.' + (refused ? ` (${refused} not accessible)` : '')); return; }
+  const keep = new Set(tiles.filter(t => isPinnedKey(t.label)));
+  unfocus(true);
+  for (const t of tiles) if (!keep.has(t)) clearTile(t);
+  let deck = shuffled(pool);
+  for (const t of tiles) {
+    if (keep.has(t)) continue;
+    if (!deck.length) deck = shuffled(pool);
+    const e = deck.pop();
+    try { setTileSource(t, await urlFor(e), e.key); } catch { /* unreadable file: leave the screen dark */ }
+  }
+  setStatus(`${pool.length} liked videos on ${tiles.length - keep.size} screens` + (refused ? `, ${refused} not accessible` : '') + '.');
+}
 // ---- Bookmarks: a video at a moment (library reference + play time), for reference only so far.
 let bookmarks = [];        // [{ handle, rootName, rel, name, time, at }]
 const fmtTime = t => { t = Math.max(0, Math.round(t)); const h = Math.floor(t / 3600), m = Math.floor(t % 3600 / 60), s = t % 60; return (h ? `${h}:${String(m).padStart(2, '0')}` : `${m}`) + `:${String(s).padStart(2, '0')}`; };
@@ -1745,7 +1785,7 @@ function placePanel(tile) {
 }
 // ---- Station board: a small table that follows you at waist height, below the straight-ahead view.
 // Faint until you look at it or point at it. Its slots are drag sources: drag "Deploy favourite" onto a screen.
-const BOARD_W = 0.5, BOARD_H = 0.25, BOARD_AHEAD = 0.55, BOARD_DROP = 0.9, BOARD_TILT = THREE.MathUtils.degToRad(-55);
+const BOARD_W = 0.66, BOARD_H = 0.25, BOARD_AHEAD = 0.55, BOARD_DROP = 0.9, BOARD_TILT = THREE.MathUtils.degToRad(-55);
 const board = new THREE.Group();
 scene.add(board);
 const boardMat = new THREE.MeshBasicMaterial({ color: 0x101418, transparent: true, opacity: 0.3, depthTest: false, depthWrite: false });
@@ -1791,8 +1831,31 @@ const liftSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest: 
 const liftSlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), liftSlotMat);
 liftSlot.position.set(-BOARD_W / 2 + 0.39, 0, 0.002); liftSlot.renderOrder = 26; liftSlot.userData.slot = 'lift';
 board.add(liftSlot);
-const boardSlots = [deploySlot, shuffleSlot, liftSlot];
-function tapSlot(kind) { if (kind === 'shuffle') dealRandom(); else if (kind === 'lift') liftOverride(); }
+const likesSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, map: slotTexture(c => {
+  c.fillStyle = '#ff4a6a'; c.beginPath();                                        // heart with shuffle arrows across it
+  c.moveTo(128, 180); c.bezierCurveTo(50, 125, 70, 55, 128, 95); c.bezierCurveTo(186, 55, 206, 125, 128, 180); c.fill();
+  c.strokeStyle = '#fff'; c.lineWidth = 10; c.lineCap = 'round'; c.lineJoin = 'round';
+  c.beginPath(); c.moveTo(80, 100); c.lineTo(110, 100); c.lineTo(146, 140); c.lineTo(176, 140); c.stroke();
+  c.beginPath(); c.moveTo(80, 140); c.lineTo(110, 140); c.lineTo(146, 100); c.lineTo(176, 100); c.stroke();
+  c.fillStyle = '#fff'; c.font = 'bold 30px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('shuffle ♥ (hold)', 128, 225);
+}) });
+const likesSlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), likesSlotMat);
+likesSlot.position.set(-BOARD_W / 2 + 0.54, 0, 0.002); likesSlot.renderOrder = 26; likesSlot.userData.slot = 'likes'; likesSlot.userData.hold = true;
+board.add(likesSlot);
+const slotBarMat = new THREE.MeshBasicMaterial({ color: 0xd04040, transparent: true, depthTest: false, depthWrite: false });
+const slotBar = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.014), slotBarMat);   // hold progress under a hold slot
+slotBar.renderOrder = 27; slotBar.visible = false;
+board.add(slotBar);
+function setSlotHold(mesh, frac) {   // progress bar under the slot being held (null hides it)
+  if (!mesh) { slotBar.visible = false; return; }
+  slotBar.visible = true; slotBar.scale.x = Math.max(0.001, Math.min(1, frac));
+  slotBar.position.set(mesh.position.x - 0.06 + 0.06 * slotBar.scale.x, mesh.position.y - 0.075, 0.003);
+}
+const boardSlots = [deploySlot, shuffleSlot, liftSlot, likesSlot];
+const slotMesh = kind => boardSlots.find(m => m.userData.slot === kind);
+const slotNeedsHold = kind => !!(slotMesh(kind) && slotMesh(kind).userData.hold);
+function tapSlot(kind) { if (kind === 'shuffle') dealRandom(); else if (kind === 'lift') liftOverride(); else if (kind === 'likes') shuffleLikes(); }
 const BOARD_SLOT = { isBoard: true, label: '' };   // drag source sentinel for the deploy slot
 const _bf = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bm = new THREE.Matrix4();
 let boardYaw = null, boardHot = false;
@@ -1816,7 +1879,7 @@ function updateBoard(dt) {
   const gazing = toBoard.dot(_bf) > Math.cos(THREE.MathUtils.degToRad(25));
   const target = gazing || boardHot ? 1 : 0.3;
   boardMat.opacity += (target - boardMat.opacity) * Math.min(1, dt * 8);
-  deploySlotMat.opacity = shuffleSlotMat.opacity = boardMat.opacity;
+  deploySlotMat.opacity = shuffleSlotMat.opacity = likesSlotMat.opacity = boardMat.opacity;
   liftSlotMat.opacity = boardMat.opacity * (override ? 1 : 0.35);   // only lit while an override is up
 }
 
@@ -1979,6 +2042,15 @@ function updateHand(hand, dt, now) {
   if (trigger && !p.trigger && slot === 'liked') startDrag(hand, 'liked', BOARD_SLOT, now);
   if (trigger && !p.trigger && (slot === 'shuffle' || slot === 'lift')) hand.tapSlot = slot;   // tap (press + release on the same slot)
   if (!trigger && p.trigger && hand.tapSlot) { const k = hand.tapSlot; hand.tapSlot = null; if (slot === k) tapSlot(k); }
+  if (trigger && !p.trigger && slot && slotNeedsHold(slot)) hand.holdSlot = { kind: slot, t0: now };   // hold slots fire after HOLD_MS
+  if (hand.holdSlot) {
+    if (!trigger || slot !== hand.holdSlot.kind) { hand.holdSlot = null; setSlotHold(null); }
+    else {
+      const f = (now - hand.holdSlot.t0) / HOLD_MS;
+      setSlotHold(slotMesh(slot), f);
+      if (f >= 1) { hand.holdSlot = null; setSlotHold(null); tapSlot(slot); }
+    }
+  }
   if (grip && !p.grip && tile) startDrag(hand, 'copy', tile, now, lx, ly, hit);
   if (!trigger && p.trigger && hand.drag && (hand.drag.kind === 'swap' || hand.drag.kind === 'liked')) endDrag(hand, tile, now);
   if (!grip && p.grip && hand.drag && hand.drag.kind === 'copy') endDrag(hand, tile, now);
@@ -2160,17 +2232,19 @@ let yaw = 0, pitch = 0, dragging = false, downX = 0, downY = 0, moved = false;
 const mouse = new THREE.Vector2(2, 2);
 let mouseTile = null;
 let mouseHold = null;   // { idx, t0 } while the mouse button is held on a hold button
-let mouseSlot = null, mouseSlotDrag = false;   // station board slot under the mouse; dragging from the deploy slot
+let mouseSlot = null, mouseSlotDrag = false, mouseSlotHold = null;   // station board slot under the mouse; dragging from the deploy slot; holding a hold slot
 renderer.domElement.addEventListener('pointerdown', e => {
   dragging = true; moved = false; downX = e.clientX; downY = e.clientY;
   if (e.button === 0 && mouseTile && panelHoverBtn >= 0 && panelBtns[panelHoverBtn].hold) mouseHold = { idx: panelHoverBtn, t0: performance.now() };
   if (e.button === 0 && mouseSlot === 'liked') mouseSlotDrag = true;
+  if (e.button === 0 && mouseSlot && slotNeedsHold(mouseSlot)) mouseSlotHold = { kind: mouseSlot, t0: performance.now() };
 });
 addEventListener('pointerup', e => {
   dragging = false;
   const held = mouseHold; mouseHold = null;
   if (held) { if (!held.fired) setPanelHold(null); return; }   // released early, or it already fired: no click
   if (mouseSlotDrag) { mouseSlotDrag = false; if (mouseTile) deployLiked(mouseTile); return; }   // deploy ♥ dragged onto a screen
+  if (mouseSlotHold) { const h = mouseSlotHold; mouseSlotHold = null; if (!h.fired) setSlotHold(null); return; }
   if (e.target !== renderer.domElement || renderer.xr.isPresenting) return;
   if (e.button === 0 && mouseSlot && !moved) { tapSlot(mouseSlot); return; }
   if (moved) return;
@@ -2232,6 +2306,14 @@ function updateMouse() {
   if (tile !== mouseTile) { mouseTile = tile; setFocus(tile); }
   const btn = onPanel ? panelButtonAt(hit.uv) : -1;
   if (btn !== panelHoverBtn) { panelHoverBtn = btn; if (focusTile) drawPanel(focusTile); }
+  if (mouseSlotHold && !mouseSlotHold.fired) {
+    if (mouseSlot !== mouseSlotHold.kind) { mouseSlotHold = null; setSlotHold(null); }
+    else {
+      const f = (performance.now() - mouseSlotHold.t0) / HOLD_MS;
+      setSlotHold(slotMesh(mouseSlot), f);
+      if (f >= 1) { mouseSlotHold = { fired: true }; setSlotHold(null); tapSlot(mouseSlot); }
+    }
+  }
   if (mouseHold && !mouseHold.fired) {
     if (btn !== mouseHold.idx || !tile) { mouseHold = null; setPanelHold(null); }
     else {
@@ -2285,6 +2367,6 @@ renderer.setAnimationLoop(() => {
   else { updateMouse(); updateDesktopWalk(dt); }
   updateHud();
   updateBoard(dt);
-  boardHot = hands.some(h => h.onSlot || (h.drag && h.drag.kind === 'liked')) || !!mouseSlot || mouseSlotDrag;
+  boardHot = hands.some(h => h.onSlot || h.holdSlot || (h.drag && h.drag.kind === 'liked')) || !!mouseSlot || mouseSlotDrag;
   renderer.render(scene, camera);
 });

@@ -32,11 +32,13 @@ presence and whether an `immersive-vr` session is supported.
 
 ## Controls
 
-Point a Sense controller at a screen; it gets a blue border, an info strip along its
-bottom edge (progress bar, name, time, speaker icon, pause mark) and a small button panel
-in its bottom-right corner (grid or split level with − / + buttons). The panel is a fixed
-36 cm wide whatever the screen size, and slides inward on triangles and kites so it always
-stays on the face.
+Point a Sense controller at a screen: its contour lights up as the progress bar (bright blue
+for the played part, clockwise from the top-left corner), a sound icon floats in front of its
+top-right corner (green = audible, grey with a red cross = muted, pause bars when paused), and
+a small button panel sits in its bottom-right corner (grid or split level with − / + buttons).
+Icon and panel keep a constant apparent size whatever the distance; the panel shrinks only when
+the tile cannot hold it, and slides inward on triangles and kites. Screens that are audible show
+the sound icon even when not pointed at.
 
 **Tap (pointing at a screen)**
 
@@ -116,11 +118,13 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
 - **Room scale**: `roomGroup.scale` + `roomGroup.position`, scaled about the head so the
   floor stays at y=0 and walls recede evenly. `commitRoomScale()` bakes the live scale into
   the W/D/H fields on stick release.
-- **Strip and panel**: `stripMesh` (info, not interactive) and `panelMesh` (buttons) are single
-  `CanvasTexture` meshes re-parented to the focused tile's surface group. Only the panel is in the
-  raycast list; `panelButtonAt(uv)` maps hits to buttons. Every tile has an `outline` polygon;
-  `fitBand()` finds the lowest band inside it wide enough for the panel (shrinking the panel if
-  needed) and `placeStrip()` puts the strip on the widest band of a polygon tile.
+- **HUD**: every tile has an `outline` polygon, a `highlight` ring (`makeRing`: quads around the
+  outline, clockwise from top-left, `setRingProgress` lights the first k segments) and a floating
+  `icon` mesh. `updateHud()` runs every frame: progress on the focused tile, icons on focused or
+  audible tiles, sized by distance to the eye (`ICON_DEG`). `panelMesh` (buttons) is a single
+  `CanvasTexture` mesh re-parented to the focused tile's surface group, sized by distance
+  (`PANEL_DEG`), placed with `fitBand()` in the lowest band of the outline that holds it. Only the
+  panel is in the raycast list; `panelButtonAt(uv)` maps hits to buttons.
 - **Gamepad mapping** (WebXR standard): 0 trigger, 1 grip, 3 stick click, 4 A/X, 5 B/Y,
   axes 2/3 thumbstick.
 

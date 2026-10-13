@@ -209,6 +209,72 @@ scene.add(rig);
 // ---- Tiles ----
 const placeholder = new THREE.MeshBasicMaterial({ color: 0x1a1a1a });
 const bezelMat = new THREE.MeshBasicMaterial({ color: 0x050505 });
+// ---- Hover HUD: the screen's contour is its progress bar; a sound icon floats in front of it ----
+const RING_W = 0.025, RING_SEGS = 160;
+const RING_ON = new THREE.Color(0x6fc3ff), RING_OFF = new THREE.Color(0x24507a);
+const ringMat = new THREE.MeshBasicMaterial({ vertexColors: true });
+// Ring of quads around a convex outline (counter-clockwise points), ordered clockwise from the top-left corner
+// so that lighting the first k segments draws playback progress.
+function makeRing(outline, width) {
+  const n = outline.length;
+  let start = 0, best = -Infinity;
+  outline.forEach((p, i) => { const sc = p[1] - p[0]; if (sc > best) { best = sc; start = i; } });
+  const pts = []; for (let k = 0; k < n; k++) pts.push(outline[(start - k + n) % n]);   // reversed = clockwise
+  const edges = []; let per = 0;
+  for (let i = 0; i < n; i++) { const a = pts[i], b = pts[(i + 1) % n], L = Math.hypot(b[0] - a[0], b[1] - a[1]); edges.push({ a, b, L }); per += L; }
+  const pos = [], col = [], idx = []; let segs = 0;
+  for (const e of edges) {
+    const dx = (e.b[0] - e.a[0]) / e.L, dy = (e.b[1] - e.a[1]) / e.L, nx = -dy, ny = dx;   // outward for a clockwise polygon
+    const m = Math.max(1, Math.round(e.L / per * RING_SEGS));
+    for (let j = 0; j < m; j++) {
+      const l0 = e.L * j / m + (j === 0 ? -width : 0), l1 = e.L * (j + 1) / m + (j === m - 1 ? width : 0);   // overlap the corners
+      const x0 = e.a[0] + dx * l0, y0 = e.a[1] + dy * l0, x1 = e.a[0] + dx * l1, y1 = e.a[1] + dy * l1;
+      const b = pos.length / 3;
+      pos.push(x0, y0, 0, x1, y1, 0, x1 + nx * width, y1 + ny * width, 0, x0 + nx * width, y0 + ny * width, 0);
+      for (let k = 0; k < 4; k++) col.push(RING_OFF.r, RING_OFF.g, RING_OFF.b);
+      idx.push(b, b + 1, b + 2, b, b + 2, b + 3);
+      segs++;
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  const mesh = new THREE.Mesh(g, ringMat);
+  mesh.userData.segs = segs; mesh.userData.lit = -1;
+  return mesh;
+}
+function setRingProgress(ring, progress) {
+  const n = ring.userData.segs, lit = Math.round(Math.max(0, Math.min(1, progress)) * n);
+  if (lit === ring.userData.lit) return;
+  ring.userData.lit = lit;
+  const c = ring.geometry.attributes.color;
+  for (let i = 0; i < n; i++) { const k = i < lit ? RING_ON : RING_OFF; for (let v = 0; v < 4; v++) c.setXYZ(i * 4 + v, k.r, k.g, k.b); }
+  c.needsUpdate = true;
+}
+// Sound icon: speaker (green = audible, grey with red cross = muted), pause bars when paused.
+const ICON_DEG = 2.6, ICON_LIFT = 0.06;   // apparent size (degrees) and how far it floats in front of the surface (m)
+const iconMats = {};
+function iconMaterial(audible, paused) {
+  const key = (audible ? 'a' : 'm') + (paused ? 'p' : '');
+  if (iconMats[key]) return iconMats[key];
+  const cv = document.createElement('canvas'); cv.width = cv.height = 128;
+  const c = cv.getContext('2d');
+  c.fillStyle = 'rgba(0,0,0,0.55)'; c.beginPath(); c.arc(64, 64, 60, 0, Math.PI * 2); c.fill();
+  c.fillStyle = audible ? '#4aff8a' : '#aaa';
+  c.beginPath(); c.moveTo(30, 50); c.lineTo(48, 50); c.lineTo(70, 30); c.lineTo(70, 98); c.lineTo(48, 78); c.lineTo(30, 78); c.closePath(); c.fill();
+  c.lineWidth = 6; c.lineCap = 'round';
+  if (audible) { c.strokeStyle = '#4aff8a'; c.beginPath(); c.arc(74, 64, 18, -0.9, 0.9); c.stroke(); c.beginPath(); c.arc(74, 64, 30, -0.9, 0.9); c.stroke(); }
+  else { c.strokeStyle = '#f55'; c.beginPath(); c.moveTo(80, 50); c.lineTo(106, 78); c.moveTo(106, 50); c.lineTo(80, 78); c.stroke(); }
+  if (paused) { c.fillStyle = '#ffd24a'; c.fillRect(84, 86, 10, 30); c.fillRect(100, 86, 10, 30); }
+  const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
+  return iconMats[key] = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false });
+}
+function makeIcon() {
+  const m = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), iconMaterial(false, false));
+  m.visible = false; m.renderOrder = 9;
+  return m;
+}
 const highlightMat = new THREE.MeshBasicMaterial({ color: 0x4aa8ff });
 const roomGroup = new THREE.Group();
 scene.add(roomGroup);
@@ -248,10 +314,12 @@ function buildSurface(s) {
     m.position.set(-sw / 2 + bezel + tw / 2 + c * (tw + bezel),
                     sh / 2 - bezel - th / 2 - r * (th + bezel), 0);
     g.add(m);
-    const hl = new THREE.Mesh(new THREE.PlaneGeometry(tw + 0.05, th + 0.05), highlightMat);
+    const outline = [[-tw / 2, -th / 2], [tw / 2, -th / 2], [tw / 2, th / 2], [-tw / 2, th / 2]];
+    const hl = makeRing(outline, RING_W);
     hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
     g.add(hl);
-    const tile = { mesh: m, w: tw, h: th, video: null, label: '', highlight: hl, surface: s.key, outline: [[-tw / 2, -th / 2], [tw / 2, -th / 2], [tw / 2, th / 2], [-tw / 2, th / 2]] };
+    const icon = makeIcon(); icon.position.copy(m.position); g.add(icon);
+    const tile = { mesh: m, w: tw, h: th, video: null, label: '', highlight: hl, icon, surface: s.key, outline };
     tiles.push(tile); tileOf.set(m, tile); made.push(tile);
   }
   return made;
@@ -277,10 +345,11 @@ function buildFaceTiles(s, g, level, bezel) {
     const m = new THREE.Mesh(shapeGeometry(pts), placeholder);
     m.position.set(c[0], c[1], 0);
     g.add(m);
-    const hl = new THREE.Mesh(shapeGeometry(pts.map(p => [p[0] * 1.08, p[1] * 1.08])), highlightMat);
+    const hl = makeRing(pts, RING_W);
     hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
     g.add(hl);
-    const tile = { mesh: m, w, h, video: null, label: '', highlight: hl, surface: s.key, poly: pts, outline: pts };
+    const icon = makeIcon(); icon.position.copy(m.position); g.add(icon);
+    const tile = { mesh: m, w, h, video: null, label: '', highlight: hl, icon, surface: s.key, poly: pts, outline: pts };
     fitPolyUV(tile, 16 / 9);
     tiles.push(tile); tileOf.set(m, tile); made.push(tile);
   }
@@ -750,11 +819,12 @@ const dimMat = new THREE.MeshBasicMaterial({ color: 0x0a0a0a });
 const floatGroup = new THREE.Group();
 scene.add(floatGroup);
 const floatMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), placeholder);
-const floatHL = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), highlightMat);
-floatHL.position.z = -0.003; floatHL.visible = false; floatHL.scale.set(1.012, 1.018, 1);
-floatGroup.add(floatMesh, floatHL);
+const floatHL = makeRing([[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]], 0.012);
+floatHL.position.z = -0.003; floatHL.visible = false;
+const floatIcon = makeIcon();
+floatGroup.add(floatMesh, floatHL, floatIcon);
 floatGroup.visible = false;
-const floatTile = { mesh: floatMesh, w: 1, h: 1, video: null, label: '', highlight: floatHL, isFloat: true, origin: null };
+const floatTile = { mesh: floatMesh, w: 1, h: 1, video: null, label: '', highlight: floatHL, icon: floatIcon, isFloat: true, origin: null, outline: [[-0.5, -0.5], [0.5, -0.5], [0.5, 0.5], [-0.5, 0.5]] };
 let focused = null;                    // the wall tile currently lifted out
 let anim = null;                       // { from:{p,q,s}, to:{p,q,s}, t0, dir:+1|-1 }
 const _p = new THREE.Vector3(), _q = new THREE.Quaternion(), _s = new THREE.Vector3();
@@ -883,19 +953,8 @@ setInterval(() => {
   if (Math.abs(floatGroup.scale.y - fh) > 0.01 || Math.abs(floatGroup.scale.x - fw) > 0.01) floatGroup.scale.set(fw, fh, 1);
 }, 500);
 
-// ---- Info strip (canvas texture, shown on the focused tile only) ----
-const stripCanvas = document.createElement('canvas');
-stripCanvas.width = 1400; stripCanvas.height = 96;
-const STRIP_PAD = 24;   // right margin of the info strip (canvas px)
-const stripCtx = stripCanvas.getContext('2d');
-const stripTex = new THREE.CanvasTexture(stripCanvas);
-stripTex.colorSpace = THREE.SRGBColorSpace;
-const stripMesh = new THREE.Mesh(new THREE.PlaneGeometry(1, 1),
-  new THREE.MeshBasicMaterial({ map: stripTex, transparent: true, depthTest: false }));
-stripMesh.renderOrder = 10; stripMesh.visible = false;
-
 // ---- Grid/split buttons: a small panel of fixed physical size, tucked into the hovered tile's bottom-right corner.
-const PANEL_W = 0.36, PANEL_H = 0.09, PANEL_MARGIN = 0.02;   // metres
+const PANEL_DEG = 5.5, PANEL_MARGIN = 0.02;   // panel height as an angle at the eye (buttons ≈ 3°), margin in metres
 const panelCanvas = document.createElement('canvas');
 panelCanvas.width = 640; panelCanvas.height = 160;
 const BTN_W = 96, BTN_GAP = 10;
@@ -956,11 +1015,11 @@ function chordAt(pts, y) {
   return xl <= xr ? [xl, xr] : null;
 }
 // Lowest band of height bh whose interior width is at least minW; returns { y (bottom), xl, xr } or null.
-function fitBand(pts, bh, minW, yMin) {
+function fitBand(pts, bh, minW, yMin, fromTop = false) {
   const ys = pts.map(p => p[1]), y0 = Math.max(Math.min(...ys), yMin), y1 = Math.max(...ys) - bh;
   const steps = 32;
   for (let i = 0; i <= steps; i++) {
-    const y = y0 + (y1 - y0) * i / steps;
+    const y = y0 + (y1 - y0) * (fromTop ? steps - i : i) / steps;
     const lo = chordAt(pts, y + 1e-6), hi = chordAt(pts, y + bh - 1e-6);
     if (!lo || !hi) continue;
     const xl = Math.max(lo[0], hi[0]), xr = Math.min(lo[1], hi[1]);
@@ -971,72 +1030,58 @@ function fitBand(pts, bh, minW, yMin) {
 function placePanel(tile) {
   const used = drawPanel(tile);
   const aspect = (panelCanvas.width * used) / panelCanvas.height;
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(_eye); tile.mesh.getWorldPosition(_iw);
+  const panelH = 2 * _eye.distanceTo(_iw) * Math.tan(THREE.MathUtils.degToRad(PANEL_DEG / 2));   // metres, constant apparent size
   if (tile.isFloat) {   // unit space inside floatGroup (scaled to the screen size)
     const fw = floatGroup.scale.x, fh = floatGroup.scale.y;
-    const sh = Math.min(0.14, 0.22 / fh);
-    const pw = PANEL_W * used / fw, ph = PANEL_H / fh, m = PANEL_MARGIN / fw;
+    const pw = panelH * aspect / fw, ph = panelH / fh, m = PANEL_MARGIN / fw;
     panelMesh.scale.set(pw, ph, 1);
-    panelMesh.position.set(0.5 - m - pw / 2, -0.5 + sh + PANEL_MARGIN / fh + ph / 2, 0.005);
+    panelMesh.position.set(0.5 - m - pw / 2, -0.5 + PANEL_MARGIN / fh + ph / 2, 0.005);
     return;
   }
   const k = 1 / roomScale;   // local units per metre
-  const sh = Math.min(tile.h * 0.14, 0.22);
   const m = PANEL_MARGIN * k;
   let scale = 1, band = null, pw = 0, ph = 0;
   for (; scale >= 0.3; scale *= 0.8) {
-    pw = PANEL_H * aspect * k * scale; ph = PANEL_H * k * scale;
-    band = fitBand(tile.outline, ph + 2 * m, pw + 2 * m, -tile.h / 2 + sh);
+    pw = panelH * aspect * k * scale; ph = panelH * k * scale;
+    band = fitBand(tile.outline, ph + 2 * m, pw + 2 * m, -Infinity);
     if (band) break;
   }
   panelMesh.scale.set(pw, ph, 1);
   if (band) panelMesh.position.set(tile.mesh.position.x + band.xr - m - pw / 2, tile.mesh.position.y + band.y + m + ph / 2, 0.005);
   else panelMesh.position.set(tile.mesh.position.x, tile.mesh.position.y, 0.005);
 }
-// Put the info strip on the widest band that fits a polygon tile (rectangles: the bottom edge).
-function placeStrip(tile) {
-  const sh = Math.min(tile.h * 0.14, 0.22);
-  let x = tile.mesh.position.x, y = tile.mesh.position.y - tile.h / 2 + sh / 2, w = tile.w;
-  if (tile.poly) {
-    let best = null;
-    for (let i = 0; i <= 24; i++) {
-      const yb = -tile.h / 2 + (tile.h - sh) * i / 24;
-      const lo = chordAt(tile.poly, yb + 1e-6), hi = chordAt(tile.poly, yb + sh - 1e-6);
-      if (!lo || !hi) continue;
-      const xl = Math.max(lo[0], hi[0]), xr = Math.min(lo[1], hi[1]);
-      if (!best || xr - xl > best.w * 1.15) best = { y: yb, xl, xr, w: xr - xl };   // prefer lower bands unless clearly wider
-    }
-    if (best) { x += (best.xl + best.xr) / 2; y = tile.mesh.position.y + best.y + sh / 2; w = best.w; }
+// Per-frame HUD: contour progress on the hovered screen, floating sound icons on hovered or audible screens.
+const _iw = new THREE.Vector3();
+function updateHud() {
+  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  cam.getWorldPosition(_eye);
+  if (focusTile) {
+    const v = focusTile.video, dur = v && isFinite(v.duration) ? v.duration : 0;
+    setRingProgress(focusTile.highlight, dur ? v.currentTime / dur : 0);
   }
-  stripMesh.scale.set(w, sh, 1);
-  stripMesh.position.set(x, y, 0.004);
-}
-
-const fmt = s => { s = Math.max(0, s | 0); const m = (s / 60) | 0, h = (m / 60) | 0; return (h ? h + ':' + String(m % 60).padStart(2, '0') : m) + ':' + String(s % 60).padStart(2, '0'); };
-function drawStrip(tile) {
-  const c = stripCtx, v = tile.video, Wc = stripCanvas.width, Hc = stripCanvas.height;
-  c.clearRect(0, 0, Wc, Hc);
-  c.fillStyle = 'rgba(0,0,0,0.65)'; c.fillRect(0, 0, Wc, Hc);
-  const dur = v && isFinite(v.duration) ? v.duration : 0;
-  const prog = dur ? v.currentTime / dur : 0;
-  c.fillStyle = '#333'; c.fillRect(24, 14, Wc - 48, 10);
-  c.fillStyle = '#4aa8ff'; c.fillRect(24, 14, (Wc - 48) * prog, 10);
-  c.font = '34px system-ui, sans-serif'; c.textBaseline = 'middle'; c.fillStyle = '#fff';
-  let name = tileName(tile.label) || '(empty)';
-  while (c.measureText(name).width > Wc - STRIP_PAD - 440 && name.length > 4) name = name.slice(0, -2);
-  c.fillText(name, 24, 60);
-  const R = Wc - STRIP_PAD;   // right edge of the info area
-  c.textAlign = 'right';
-  c.fillText(v ? `${fmt(v.currentTime)} / ${fmt(dur)}` : '', R - 150, 60);
-  c.textAlign = 'left';
-  // speaker icon
-  const sx = R - 120, sy = 60;
-  c.fillStyle = v && !v.muted ? '#4aff8a' : '#888';
-  c.beginPath(); c.moveTo(sx, sy - 10); c.lineTo(sx + 12, sy - 10); c.lineTo(sx + 28, sy - 24); c.lineTo(sx + 28, sy + 24); c.lineTo(sx + 12, sy + 10); c.lineTo(sx, sy + 10); c.closePath(); c.fill();
-  if (v && !v.muted) { c.strokeStyle = '#4aff8a'; c.lineWidth = 4; c.beginPath(); c.arc(sx + 30, sy, 18, -0.9, 0.9); c.stroke(); }
-  else { c.strokeStyle = '#f66'; c.lineWidth = 5; c.beginPath(); c.moveTo(sx + 36, sy - 14); c.lineTo(sx + 60, sy + 14); c.moveTo(sx + 60, sy - 14); c.lineTo(sx + 36, sy + 14); c.stroke(); }
-  // pause mark
-  if (v && v.paused) { c.fillStyle = '#ffd24a'; c.fillRect(R - 48, sy - 18, 10, 36); c.fillRect(R - 30, sy - 18, 10, 36); }
-  stripTex.needsUpdate = true;
+  const all = focused ? [...tiles, floatTile] : tiles;
+  for (const t of all) {
+    const v = t.video;
+    const show = t === focusTile || (v && !v.muted && !(focused && t === focused));
+    if (!show) { t.icon.visible = false; continue; }
+    t.icon.visible = true;
+    t.icon.material = iconMaterial(v && !v.muted, v && v.paused);
+    t.mesh.getWorldPosition(_iw);
+    const size = 2 * _eye.distanceTo(_iw) * Math.tan(THREE.MathUtils.degToRad(ICON_DEG / 2)) * (t === focusTile ? 1 : 0.7);
+    if (t.isFloat) {   // unit space inside floatGroup
+      const fw = floatGroup.scale.x, fh = floatGroup.scale.y, sx = size / fw, sy = size / fh;
+      t.icon.scale.set(sx, sy, 1);
+      t.icon.position.set(0.5 - sx / 2 - 0.02 / fw, 0.5 - sy / 2 - 0.02 / fh, ICON_LIFT / Math.max(fw, fh));
+    } else {
+      const k = 1 / roomScale, sz = size * k, m = 0.02 * k;
+      const band = fitBand(t.outline, sz + 2 * m, sz + 2 * m, -Infinity, true);
+      t.icon.scale.set(sz, sz, 1);
+      if (band) t.icon.position.set(t.mesh.position.x + band.xr - m - sz / 2, t.mesh.position.y + band.y + m + sz / 2, ICON_LIFT * k);
+      else t.icon.position.set(t.mesh.position.x, t.mesh.position.y, ICON_LIFT * k);
+    }
+  }
 }
 
 let focusTile = null;
@@ -1045,19 +1090,12 @@ function setFocus(tile) {
   if (focusTile) { focusTile.highlight.visible = false; }
   focusTile = tile;
   if (tile) {
-    tile.highlight.visible = true;
-    tile.mesh.parent.add(stripMesh);
+    tile.highlight.visible = true; tile.highlight.userData.lit = -1;
     tile.mesh.parent.add(panelMesh);
-    if (tile.isFloat) {
-      // floatGroup is scaled to the screen size, so position/scale in unit space
-      const sh = Math.min(0.14, 0.22 / floatGroup.scale.y);
-      stripMesh.scale.set(1, sh, 1);
-      stripMesh.position.set(0, -0.5 + sh / 2, 0.004);
-    } else placeStrip(tile);
     placePanel(tile);
-    stripMesh.visible = true; panelMesh.visible = true;
+    panelMesh.visible = true;
   } else {
-    stripMesh.visible = false; panelMesh.visible = false;
+    panelMesh.visible = false;
   }
 }
 
@@ -1369,13 +1407,12 @@ setInterval(() => {
 // ---- Main loop ----
 buildLayout();
 const clock = new THREE.Clock();
-let stripTick = 0;
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1), now = performance.now();
   frames++;
   updateFocusAnim(now);
   if (renderer.xr.isPresenting) for (const h of hands) updateHand(h, dt, now);
   else { updateMouse(); updateDesktopWalk(dt); }
-  if (focusTile && now - stripTick > 100) { drawStrip(focusTile); stripTick = now; }
+  updateHud();
   renderer.render(scene, camera);
 });

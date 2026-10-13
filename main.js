@@ -701,7 +701,7 @@ async function restructure(key, node) {
     const t = made[i], src = inherit.get(L);
     if (!src || !src.video) { fresh.push(t); return; }
     const mat = src.mesh.material;
-    t.video = src.video; t.label = src.label; t.view = src.view ? { ...src.view } : null;
+    t.video = src.video; t.label = src.label; t.view = src.view ? { ...src.view } : null; t.hist = src.hist;
     enterWith(t, src.video, mat, () => { t.mesh.material = mat; refitTile(t); }, enter);
   });
   if (library.length) {
@@ -822,9 +822,10 @@ function disposeVideos() {
     t.mesh.material = placeholder; t.video = null; t.label = '';
   }
 }
-function setTileSource(tile, src, label, enter = popIn) {
-  if (tile.isFloat) { setTileSource(tile.origin, src, label); syncFloat(); return; }
+function setTileSource(tile, src, label, enter = popIn, nav = false) {
+  if (tile.isFloat) { setTileSource(tile.origin, src, label, enter, nav); syncFloat(); return; }
   cancelTransition(tile);
+  if (!nav) pushHist(tile, label);
   const old = tile.video, oldMat = tile.mesh.material, oldLabel = tile.label;
   const v = makeVideo(src), mat = makeMaterial(v);
   tile.video = v; tile.label = label;
@@ -924,9 +925,10 @@ function rebuildLikedKeys() {
   const n = likes.length, avail = likedKeys.size;
   $('likeInfo').textContent = n ? `${n} liked${avail < n ? ` (${avail} available)` : ''}` : 'no liked videos yet';
   rebuildPinnedKeys();
+  rebuildDismissedKeys();
 }
 const isLikedKey = key => likedKeys.has(key);
-const likedEntries = () => library.filter(e => likedKeys.has(e.key));
+const likedEntries = () => library.filter(e => likedKeys.has(e.key) && !dismissedKeys.has(e.key));
 async function persistLikes() { await kvSet('likes', likes.map(l => ({ handle: l.handle, rootName: l.rootName, rel: l.rel, name: l.name }))); }
 async function toggleLike(tile) {
   const t = tile.isFloat ? tile.origin : tile; if (!t) return;
@@ -955,7 +957,8 @@ function makeDealer(exclude = new Set()) {
   const mode = $('dealMode').value, liked = likedEntries().filter(e => !pinnedKeys.has(e.key));
   const fresh = arr => shuffled(arr.filter(e => !exclude.has(e.key)));
   let first = (mode !== 'all' && liked.length ? fresh(liked) : []).concat(fresh(pinnedEntries()));   // popped from the end: pinned first
-  const restPool = mode === 'likedOnly' && liked.length ? liked : library;
+  const restPool = mode === 'likedOnly' && liked.length ? liked : dealable();
+  if (!restPool.length) return () => library[Math.floor(Math.random() * library.length)];   // everything dismissed: fall back to the whole library
   let rest = [];
   return () => {
     if (first.length) return first.pop();
@@ -976,7 +979,7 @@ function rebuildPinnedKeys() {
 }
 const isPinnedKey = key => pinnedKeys.has(key);
 const tilePinned = t => { const o = t && t.isFloat ? t.origin : t; return !!o && isPinnedKey(o.label); };
-const pinnedEntries = () => library.filter(e => pinnedKeys.has(e.key));
+const pinnedEntries = () => library.filter(e => pinnedKeys.has(e.key) && !dismissedKeys.has(e.key));
 async function persistPins() { await kvSet('pins', pins.map(l => ({ handle: l.handle, rootName: l.rootName, rel: l.rel, name: l.name }))); }
 async function togglePin(tile) {
   const t = tile.isFloat ? tile.origin : tile; if (!t) return;
@@ -996,9 +999,71 @@ async function unpinKey(key) {
 // A pinned video that just left its last screen (replaced by an explicit drop) is unpinned
 function unpinIfGone(label) { if (label && isPinnedKey(label) && !tiles.some(t => t.label === label)) unpinKey(label); }
 $('clearPins').addEventListener('click', async () => { pins = []; rebuildPinnedKeys(); await persistPins(); });
+// ---- Dismissed: videos that are never dealt again (shuffle, split, deploy ♥, startup, swap tap, ↶ ↷).
+// They stay in the library; the browser panel lists them for undismissing.
+let dismissed = [];        // [{ handle, rootName, rel, name }]
+let dismissedKeys = new Set();
+function rebuildDismissedKeys() {
+  const ids = new Set(dismissed.map(likeId));
+  dismissedKeys = new Set(library.filter(e => ids.has(likeId(e))).map(e => e.key));
+  $('dismissInfo').textContent = dismissed.length ? `${dismissed.length}` : 'none';
+  renderDismissed();
+}
+const isDismissedKey = key => dismissedKeys.has(key);
+const dealable = () => library.filter(e => !dismissedKeys.has(e.key));
+async function persistDismissed() { await kvSet('dismissed', dismissed.map(l => ({ handle: l.handle, rootName: l.rootName, rel: l.rel, name: l.name }))); }
+function renderDismissed() {
+  const box = $('dismissedList'); box.innerHTML = '';
+  dismissed.forEach(d => {
+    const row = document.createElement('div'); row.className = 'root';
+    row.textContent = `${d.rootName} / ${d.rel} `;
+    const x = document.createElement('button'); x.textContent = '×'; x.title = 'undismiss';
+    x.addEventListener('click', async () => { dismissed = dismissed.filter(e => e !== d); rebuildDismissedKeys(); await persistDismissed(); });
+    row.appendChild(x); box.appendChild(row);
+  });
+}
+// Dismiss the video on this screen: list it, unpin it, and swap every screen showing it to something else.
+async function dismissTile(tile) {
+  const t = tile.isFloat ? tile.origin : tile; if (!t) return;
+  const e = library.find(x => x.key === t.label);
+  if (!e) { setStatus('Only library videos can be dismissed.'); return; }
+  const id = likeId(e);
+  if (!dismissed.some(l => likeId(l) === id)) dismissed.push({ handle: e.handle, rootName: e.rootName, rel: e.rel, name: e.name });
+  rebuildDismissedKeys();
+  await persistDismissed();
+  if (isPinnedKey(e.key)) await unpinKey(e.key);
+  for (const x of tiles.slice()) if (x.label === e.key) await swapTile(x);
+  if (tile.isFloat) syncFloat();
+}
+$('showDismissed').addEventListener('click', () => { const l = $('dismissedList'); l.style.display = l.style.display === 'none' ? '' : 'none'; });
+$('clearDismissed').addEventListener('click', async () => { dismissed = []; rebuildDismissedKeys(); await persistDismissed(); });
+// ---- Per-screen history: every video a screen has shown (library keys), with ↶ / ↷ moving through it.
+const HIST_MAX = 16;
+function pushHist(tile, key) {
+  if (!key || !library.some(e => e.key === key)) return;
+  const h = tile.hist || (tile.hist = { list: [], i: -1 });
+  if (h.list[h.i] === key) return;
+  h.list = h.list.slice(0, h.i + 1); h.list.push(key);
+  if (h.list.length > HIST_MAX) h.list.shift();
+  h.i = h.list.length - 1;
+}
+const histAvail = key => !isDismissedKey(key) && library.some(e => e.key === key);
+function histTarget(tile, dir) {   // index of the next usable entry in that direction, or -1
+  const h = tile.hist; if (!h) return -1;
+  for (let i = h.i + dir; i >= 0 && i < h.list.length; i += dir) if (histAvail(h.list[i])) return i;
+  return -1;
+}
+async function histStep(tile, dir) {
+  const t = tile.isFloat ? tile.origin : tile; if (!t) return;
+  const i = histTarget(t, dir); if (i < 0) return;
+  const e = library.find(x => x.key === t.hist.list[i]); if (!e) return;
+  t.hist.i = i;
+  setTileSource(t, await urlFor(e), e.key, popIn, true);
+  if (tile.isFloat) syncFloat();
+}
 $('exportLikes').addEventListener('click', () => {
   const row = l => ({ folder: l.rootName, path: l.rel, name: l.name });
-  const blob = new Blob([JSON.stringify({ likes: likes.map(row), pins: pins.map(row) }, null, 2)], { type: 'application/json' });
+  const blob = new Blob([JSON.stringify({ likes: likes.map(row), pins: pins.map(row), dismissed: dismissed.map(row) }, null, 2)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'video-room-likes.json'; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
@@ -1081,9 +1146,9 @@ async function dealRandom() {
 // Swap one tile to a random library video not currently on any screen (if possible)
 async function swapTile(tile) {
   if (!library.length) { setStatus('Swap needs a folder library.'); return; }
-  const inUse = new Set(tiles.map(t => t.label));
-  let pool = library.filter(e => e.key !== tile.label && !inUse.has(e.key));
-  if (!pool.length) pool = library.filter(e => e.key !== tile.label);
+  const inUse = new Set(tiles.map(t => t.label)), src = dealable().length ? dealable() : library;
+  let pool = src.filter(e => e.key !== tile.label && !inUse.has(e.key));
+  if (!pool.length) pool = src.filter(e => e.key !== tile.label);
   if (!pool.length) return;
   const e = pool[Math.floor(Math.random() * pool.length)];
   setTileSource(tile, await urlFor(e), e.key);
@@ -1130,6 +1195,7 @@ async function hasPermission(r) {
 (async () => {
   likes = (await kvGet('likes')) || [];
   pins = (await kvGet('pins')) || [];
+  dismissed = (await kvGet('dismissed')) || [];
   const dm = await kvGet('dealMode'); if (dm) $('dealMode').value = dm;
   const tr = await kvGet('transitions'); if (tr) $('transitions').value = tr;
   rebuildLikedKeys();
@@ -1205,6 +1271,7 @@ function swapPlaces(a, b) {
   cancelTransition(a); cancelTransition(b);
   const va = a.video, ma = a.mesh.material, la = a.label, vb = b.video, mb = b.mesh.material, lb = b.label;
   a.video = vb; a.label = lb; b.video = va; b.label = la;
+  pushHist(a, lb); pushHist(b, la);
   const put = (t, v, m) => { if (v) enterWith(t, v, m, () => { t.mesh.material = m; refitTile(t); }); else { t.mesh.material = m; refitTile(t); } };
   put(a, vb, mb); put(b, va, ma);
 }
@@ -1216,6 +1283,7 @@ function copyTo(src, dst) {
   cancelTransition(src); cancelTransition(dst);
   const old = dst.video, oldMat = dst.mesh.material, mat = src.mesh.material, oldLabel = dst.label;
   dst.video = src.video; dst.label = src.label;
+  pushHist(dst, src.label);
   unpinIfGone(oldLabel);
   enterWith(dst, src.video, mat, () => { dst.mesh.material = mat; refitTile(dst); retire(old, oldMat); });
 }
@@ -1424,9 +1492,9 @@ setInterval(() => {
 }, 500);
 
 // ---- Grid/split buttons: a small panel of fixed physical size, tucked into the hovered tile's bottom-right corner.
-const PANEL_DEG = 5.5, PANEL_MARGIN = 0.02;   // panel height as an angle at the eye (buttons ≈ 3°), margin in metres
+const PANEL_DEG = 5, PANEL_MARGIN = 0.02;   // panel height as an angle at the eye (buttons ≈ 3°), margin in metres
 const panelCanvas = document.createElement('canvas');
-panelCanvas.width = 1240; panelCanvas.height = 160;
+panelCanvas.width = 1700; panelCanvas.height = 160;
 const BTN_W = 96, BTN_GAP = 10;
 // Button groups: grid (cols/rows, or split level on a polyhedron face), then zoom −/+ and reset for this screen.
 // Layout: − removes this piece (its siblings re-flow), + adds a sibling, ⊞ splits this piece into two.
@@ -1436,17 +1504,27 @@ const LAYOUT_BUTTONS = [
 const ZOOM_BUTTONS = [{ label: '−', title: 'zoom', dz: -1 }, { label: '+', title: 'zoom', dz: 1 }, { label: '↺', title: 'reset', reset: true }];
 const LIKE_BUTTON = { label: '♥', title: 'like', like: true };
 const PIN_BUTTON = { label: '📌', title: 'pin', pin: true };
+const DISMISS_BUTTON = { label: '✕', title: 'dismiss (hold)', dismiss: true, hold: true, solo: true };
+const HIST_BUTTONS = [{ label: '↶', title: 'history', hist: -1 }, { label: '↷', title: 'history', hist: 1 }];
+const HOLD_MS = 700;         // hold the trigger (or mouse button) this long on a hold button
+let panelHold = null;        // { idx, frac } while a hold button is being held
 let panelBtns = [];          // current layout: buttons with x0/x1 (canvas px)
 let panelHoverBtn = -1;
 function panelLayout() {
   const out = [];
   let x = 124;
-  LAYOUT_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP; });
+  const put = b => { out.push({ ...b, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP; };
+  put(DISMISS_BUTTON); x += 26;                // destructive and history buttons far from ♥ / 📌
+  HIST_BUTTONS.forEach(put); x += 26;
+  LAYOUT_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; put(b); });
   x += 150;                                   // room for the zoom value
-  ZOOM_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W, zoomX: x }); x += BTN_W + BTN_GAP; });
-  x += 26; out.push({ ...LIKE_BUTTON, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP;
-  out.push({ ...PIN_BUTTON, x0: x, x1: x + BTN_W });
+  ZOOM_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; put(b); });
+  x += 26; put(LIKE_BUTTON); put(PIN_BUTTON);
   return out;
+}
+function setPanelHold(idx, frac) {
+  panelHold = idx == null ? null : { idx, frac };
+  if (focusTile) drawPanel(focusTile);
 }
 function panelButtonAt(uv) {
   if (!uv) return -1;
@@ -1474,6 +1552,8 @@ function pressPanelButton(tile, idx) {
   if (b.reset) { resetView(t); drawPanel(tile); return; }
   if (b.like) { toggleLike(t).then(() => drawPanel(tile)); return; }
   if (b.pin) { togglePin(t).then(() => drawPanel(tile)); return; }
+  if (b.dismiss) { dismissTile(tile); return; }
+  if (b.hist) { histStep(tile, b.hist); return; }
   if (b.dz) {
     if (!t.fit) return;
     const z0 = t.view && t.view.zoom != null ? t.view.zoom : t.fit.zoomDefault;
@@ -1512,7 +1592,12 @@ function drawPanel(tile) {
   panelBtns.forEach((b, i) => {
     c.fillStyle = i === panelHoverBtn ? '#4aa8ff' : pinned && b.pin ? '#5a4a10' : '#2e2e2e';
     c.beginPath(); c.roundRect(b.x0, 44, BTN_W, 88, 14); c.fill();
-    const off = b.act === 'remove' && (!(node && node.parent) || pinned);   // the only piece of a surface, or a pinned one, cannot be removed
+    if (panelHold && panelHold.idx === i) {   // hold progress fills the button from the left
+      c.save(); c.beginPath(); c.roundRect(b.x0, 44, BTN_W, 88, 14); c.clip();
+      c.fillStyle = '#d04040'; c.fillRect(b.x0, 44, BTN_W * Math.min(1, panelHold.frac), 88); c.restore();
+    }
+    const off = (b.act === 'remove' && (!(node && node.parent) || pinned))   // the only piece of a surface, or a pinned one, cannot be removed
+             || (b.hist && (!src || histTarget(src, b.hist) < 0));
     c.fillStyle = b.like ? (liked ? '#ff4a6a' : '#777') : off ? '#666' : '#fff'; c.font = 'bold 56px system-ui, sans-serif';
     c.globalAlpha = b.pin && !pinned ? 0.35 : 1;
     c.fillText(b.label, b.x0 + BTN_W / 2, 88);
@@ -1521,7 +1606,7 @@ function drawPanel(tile) {
     if (!labelled.has(title)) {
       labelled.add(title);
       c.fillStyle = '#aaa'; c.font = '26px system-ui, sans-serif';
-      c.fillText(title, b.reset ? b.x0 + BTN_W / 2 : b.x0 + BTN_W + BTN_GAP / 2, 22);
+      c.fillText(title, b.reset || b.solo ? b.x0 + BTN_W / 2 : b.x0 + BTN_W + BTN_GAP / 2, 22);
     }
   });
   panelTex.needsUpdate = true;
@@ -1733,9 +1818,20 @@ function updateHand(hand, dt, now) {
   if (btn !== panelHoverBtn) { panelHoverBtn = btn; if (focusTile) drawPanel(focusTile); }
 
   const gp = hand.source.gamepad; if (!gp) return;
-  // Trigger on a panel button: do that and nothing else this press
-  if (btn >= 0 && gp.buttons[0] && gp.buttons[0].pressed && !hand.prev.trigger) {
-    pressPanelButton(tile, btn); hand.prev.trigger = true; return;
+  // Trigger on a panel button: do that and nothing else this press (hold buttons fire after HOLD_MS on the same button)
+  const trigDown = !!(gp.buttons[0] && gp.buttons[0].pressed);
+  if (btn >= 0 && trigDown && !hand.prev.trigger) {
+    if (panelBtns[btn].hold) hand.hold = { idx: btn, t0: now }; else pressPanelButton(tile, btn);
+    hand.prev.trigger = true; return;
+  }
+  if (hand.hold) {
+    if (!trigDown || btn !== hand.hold.idx) { hand.hold = null; setPanelHold(null); }
+    else {
+      const f = (now - hand.hold.t0) / HOLD_MS;
+      setPanelHold(btn, f);
+      if (f >= 1) { hand.hold = null; setPanelHold(null); pressPanelButton(tile, btn); }
+      hand.prev.trigger = true; return;
+    }
   }
   const b = i => !!(gp.buttons[i] && gp.buttons[i].pressed);
   const trigger = b(0), grip = b(1), stick = b(3), primary = b(4), secondary = b(5);
@@ -1969,9 +2065,15 @@ function tileFor(obj) { return obj === floatMesh ? floatTile : tileOf.get(obj); 
 let yaw = 0, pitch = 0, dragging = false, downX = 0, downY = 0, moved = false;
 const mouse = new THREE.Vector2(2, 2);
 let mouseTile = null;
-renderer.domElement.addEventListener('pointerdown', e => { dragging = true; moved = false; downX = e.clientX; downY = e.clientY; });
+let mouseHold = null;   // { idx, t0 } while the mouse button is held on a hold button
+renderer.domElement.addEventListener('pointerdown', e => {
+  dragging = true; moved = false; downX = e.clientX; downY = e.clientY;
+  if (e.button === 0 && mouseTile && panelHoverBtn >= 0 && panelBtns[panelHoverBtn].hold) mouseHold = { idx: panelHoverBtn, t0: performance.now() };
+});
 addEventListener('pointerup', e => {
   dragging = false;
+  const held = mouseHold; mouseHold = null;
+  if (held) { if (!held.fired) setPanelHold(null); return; }   // released early, or it already fired: no click
   if (e.target !== renderer.domElement || renderer.xr.isPresenting) return;
   if (moved) return;
   if (e.button === 0 && mouseTile && panelHoverBtn >= 0) { pressPanelButton(mouseTile, panelHoverBtn); return; }
@@ -2031,6 +2133,14 @@ function updateMouse() {
   if (tile !== mouseTile) { mouseTile = tile; setFocus(tile); }
   const btn = onPanel ? panelButtonAt(hit.uv) : -1;
   if (btn !== panelHoverBtn) { panelHoverBtn = btn; if (focusTile) drawPanel(focusTile); }
+  if (mouseHold && !mouseHold.fired) {
+    if (btn !== mouseHold.idx || !tile) { mouseHold = null; setPanelHold(null); }
+    else {
+      const f = (performance.now() - mouseHold.t0) / HOLD_MS;
+      setPanelHold(btn, f);
+      if (f >= 1) { mouseHold = { fired: true }; setPanelHold(null); pressPanelButton(tile, btn); }   // the release is swallowed
+    }
+  }
 }
 
 // ---- Stats ----

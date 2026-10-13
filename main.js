@@ -235,24 +235,42 @@ async function kvSet(k, v) { const db = await idb(); const tx = db.transaction('
 async function kvGet(k) { const db = await idb(); return new Promise(r => { const q = db.transaction('kv').objectStore('kv').get(k); q.onsuccess = () => r(q.result); q.onerror = () => r(undefined); }); }
 async function kvDel(k) { const db = await idb(); const tx = db.transaction('kv', 'readwrite'); tx.objectStore('kv').delete(k); return new Promise(r => tx.oncomplete = r); }
 
-async function scanDir(dir, sub, prefix, out) {
-  for await (const [name, h] of dir.entries()) {
-    if (h.kind === 'file') { if (VIDEO_EXT.test(name)) out.push({ handle: h, name, rel: prefix + name }); }
-    else if (sub && h.kind === 'directory') await scanDir(h, sub, prefix + name + '/', out);
+// Walks one folder; unreadable subfolders are skipped and counted, never abort the scan.
+async function scanDir(dir, sub, prefix, out, stat) {
+  stat.dirs++;
+  let it;
+  try { it = dir.entries(); } catch (e) { stat.failed.push(prefix || dir.name); return; }
+  while (true) {
+    let step;
+    try { step = await it.next(); } catch (e) { stat.failed.push(prefix || dir.name); return; }
+    if (step.done) return;
+    const [name, h] = step.value;
+    if (h.kind === 'file') {
+      stat.files++;
+      if (VIDEO_EXT.test(name)) out.push({ handle: h, name, rel: prefix + name });
+      else { const ext = (name.match(/\.([^.]+)$/) || [, '?'])[1].toLowerCase(); stat.other.set(ext, (stat.other.get(ext) || 0) + 1); }
+    } else if (sub && h.kind === 'directory') await scanDir(h, sub, prefix + name + '/', out, stat);
   }
 }
 async function scanRoot(r) {
   const out = [];
-  try {
-    if (r.kind === 'dir') await scanDir(r.handle, r.sub, '', out);
-    else for (const h of r.handles) if (VIDEO_EXT.test(h.name)) out.push({ handle: h, name: h.name, rel: h.name });
-  } catch (e) { setStatus(`Could not read "${r.name}": ${e.message}`); }
+  const stat = { dirs: 0, files: 0, failed: [], other: new Map() };
+  if (r.kind === 'dir') await scanDir(r.handle, r.sub, '', out, stat);
+  else for (const h of r.handles) if (VIDEO_EXT.test(h.name)) out.push({ handle: h, name: h.name, rel: h.name });
+  r.scan = stat;
   out.sort((a, b) => a.rel.localeCompare(b.rel));
   // Keep object URLs of files that are still present (screens may be playing them); drop the rest.
   const prev = new Map(r.entries.map(e => [e.rel, e]));
   for (const e of out) { e.key = `${r.id}:${e.rel}`; const o = prev.get(e.rel); if (o?.url) { e.url = o.url; prev.delete(e.rel); } }
   for (const o of prev.values()) if (o.url) URL.revokeObjectURL(o.url);
   r.entries = out;
+}
+function scanSummary(r) {
+  const st = r.scan; if (!st) return '';
+  const other = [...st.other.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([e, n]) => `${n}× .${e}`).join(', ');
+  return `Scanned ${st.dirs} folder${st.dirs === 1 ? '' : 's'}, ${st.files} file${st.files === 1 ? '' : 's'}` +
+    (other ? ` (other types: ${other})` : '') +
+    (st.failed.length ? `; could not read ${st.failed.length}: ${st.failed.slice(0, 3).join(', ')}` : '') + '.';
 }
 function rebuildLibrary() {
   library = roots.filter(r => r.granted).flatMap(r => r.entries);
@@ -291,7 +309,8 @@ async function urlFor(entry) {
 async function addRoot(r) {
   r.id = ++rootSeq; r.granted = true; r.entries = [];
   await scanRoot(r);
-  if (!r.entries.length) { setStatus(`No video files found in "${r.name}".`); return; }
+  if (!r.entries.length) { setStatus(`No video files found in "${r.name}". ${scanSummary(r)}`); return; }
+  if (r.scan?.failed.length) setStatus(`Added "${r.name}": ${r.entries.length} videos. ${scanSummary(r)}`);
   roots.push(r);
   await persistRoots();
   rebuildLibrary();

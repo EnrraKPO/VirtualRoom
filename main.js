@@ -189,14 +189,14 @@ function insidePoly(poly, p) {
   return true;
 }
 // Largest rectangle of the given aspect that fits entirely inside the polygon: grid of centres, bisection on size.
-function inscribedRect(poly, aspect) {
+function inscribedRect(poly, aspect, G = 24) {
   let sa = 0; for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length]; sa += a[0] * b[1] - b[0] * a[1]; }
   if (sa < 0) poly = poly.slice().reverse();   // insidePoly wants counter-clockwise
   const xs = poly.map(p => p[0]), ys = poly.map(p => p[1]);
   const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
   const fits = (cx, cy, w) => { const h = w / aspect; return insidePoly(poly, [cx - w / 2, cy - h / 2]) && insidePoly(poly, [cx + w / 2, cy - h / 2]) && insidePoly(poly, [cx + w / 2, cy + h / 2]) && insidePoly(poly, [cx - w / 2, cy + h / 2]); };
   let best = { cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, w: 0 };
-  const G = 24, wMax = Math.max(x1 - x0, (y1 - y0) * aspect);
+  const wMax = Math.max(x1 - x0, (y1 - y0) * aspect);
   for (let i = 1; i < G; i++) for (let j = 1; j < G; j++) {
     const cx = x0 + (x1 - x0) * i / G, cy = y0 + (y1 - y0) * j / G;
     if (!insidePoly(poly, [cx, cy]) || !fits(cx, cy, best.w)) continue;
@@ -226,25 +226,77 @@ function fitTile(tile, aspect) {
   let cx = ins.cx + (bx - ins.cx) * t + (view ? view.dx * vw : 0), cy = ins.cy + (by - ins.cy) * t + (view ? view.dy * vh : 0);
   cx = Math.max(bx - vw / 2, Math.min(bx + vw / 2, cx)); cy = Math.max(by - vh / 2, Math.min(by + vh / 2, cy));
   tile.fit = { vw, vh, cx, cy, coverRatio, zoomDefault };
-  const blank = $('fillMode').value === 'blank';
-  let pts = tile.poly;
-  if (blank) {
-    pts = clipHalf(pts, p => p[0] - (cx - vw / 2));
-    pts = clipHalf(pts, p => (cx + vw / 2) - p[0]);
-    pts = clipHalf(pts, p => p[1] - (cy - vh / 2));
-    pts = clipHalf(pts, p => (cy + vh / 2) - p[1]);
-    if (pts.length < 3) pts = tile.poly;
+  // Regions of the face, each showing the video mapped to its own rectangle { poly, cx, cy, vw, vh }.
+  const mode = $('fillMode').value, rect = { cx, cy, vw, vh };
+  const regions = [], mirrors = [];
+  if (mode === 'mirror') { const r = { poly: tile.poly, ...rect }; regions.push(r); mirrors.push(r); }
+  else {
+    const main = clipToRect(tile.poly, rect);
+    regions.push({ poly: main.length >= 3 ? main : tile.poly, ...rect });
+    if (mode === 'nested' && main.length >= 3) {
+      const depth = Math.max(1, Math.min(4, +$('nestDepth').value || 2)), inc = Math.max(0, (+$('nestInc').value || 0) / 100);
+      const fallback = $('nestFallback').value;
+      for (const piece of leftoverPieces(tile.poly, rect)) nestFill(piece, rect, 1, { aspect, crop, inc, depth, fallback, minW: Math.max(NEST_MIN_W, NEST_MIN_FRAC * vw) }, regions, mirrors);
+    }
   }
-  const same = tile.shapePts && pts.length === tile.shapePts.length && pts.every((q, i) => Math.abs(q[0] - tile.shapePts[i][0]) < 1e-7 && Math.abs(q[1] - tile.shapePts[i][1]) < 1e-7);
-  if (!same) {
-    tile.mesh.geometry.dispose();
-    tile.mesh.geometry = shapeGeometry(pts);
-    tile.shapePts = pts;
+  tile.mesh.geometry.dispose();
+  tile.mesh.geometry = regionsGeometry(regions);
+  updateSeams(tile, mirrors);
+}
+// Polygon ∩ rectangle, and the (up to four) convex pieces of polygon outside the rectangle.
+function clipToRect(poly, r) {
+  let p = clipHalf(poly, q => q[0] - (r.cx - r.vw / 2));
+  p = clipHalf(p, q => (r.cx + r.vw / 2) - q[0]);
+  p = clipHalf(p, q => q[1] - (r.cy - r.vh / 2));
+  return clipHalf(p, q => (r.cy + r.vh / 2) - q[1]);
+}
+function polyArea(p) { let a = 0; for (let i = 0; i < p.length; i++) { const q = p[i], r = p[(i + 1) % p.length]; a += q[0] * r[1] - r[0] * q[1]; } return a / 2; }
+function leftoverPieces(poly, r) {
+  const x0 = r.cx - r.vw / 2, x1 = r.cx + r.vw / 2, y0 = r.cy - r.vh / 2, y1 = r.cy + r.vh / 2;
+  const band = clipHalf(clipHalf(poly, q => q[0] - x0), q => x1 - q[0]);
+  const pieces = [clipHalf(poly, q => x0 - q[0]), clipHalf(poly, q => q[0] - x1), clipHalf(band, q => q[1] - y1), clipHalf(band, q => y0 - q[1])];
+  return pieces.filter(p => p.length >= 3 && polyArea(p) > 1e-6);
+}
+// Nested copies: fit a smaller copy of the video into a leftover piece (same rule as the face, more crop per level),
+// then recurse into that piece's own leftovers. Pieces too small or too slim get the fallback: mirrored continuation
+// of the enclosing video (with seam lines) or blank.
+const NEST_MIN_W = 0.12, NEST_MIN_FRAC = 0.2, NEST_MAX_CROP = 0.6;
+function nestFill(piece, parent, level, o, regions, mirrors) {
+  const fallback = () => { if (o.fallback === 'mirror') { const r = { poly: piece, cx: parent.cx, cy: parent.cy, vw: parent.vw, vh: parent.vh }; regions.push(r); mirrors.push(r); } };
+  if (level > o.depth) return fallback();
+  const xs = piece.map(p => p[0]), ys = piece.map(p => p[1]);
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const bw = x1 - x0, bh = y1 - y0, bx = (x0 + x1) / 2, by = (y0 + y1) / 2;
+  const ins = inscribedRect(piece, o.aspect, 12);
+  if (ins.w <= 0) return fallback();
+  const cover = Math.max(bw, bh * o.aspect), coverRatio = Math.max(1, cover / ins.w);
+  if (1 - 1 / coverRatio > NEST_MAX_CROP) return fallback();              // too slim: covering it would crop too much
+  const crop = Math.min(1, o.crop + o.inc * level);
+  const zoom = crop >= 1 ? coverRatio : Math.min(coverRatio, 1 / (1 - crop));
+  const vw = ins.w * zoom, vh = vw / o.aspect;
+  if (vw < o.minW) return fallback();                                     // too small to read
+  const t = coverRatio > 1 ? Math.max(0, Math.min(1, (zoom - 1) / (coverRatio - 1))) : 1;
+  const rect = { cx: ins.cx + (bx - ins.cx) * t, cy: ins.cy + (by - ins.cy) * t, vw, vh };
+  const main = clipToRect(piece, rect);
+  if (main.length < 3) return fallback();
+  regions.push({ poly: main, ...rect });
+  for (const sub of leftoverPieces(piece, rect)) nestFill(sub, rect, level + 1, o, regions, mirrors);
+}
+// One geometry for all regions: each region's polygon with UVs mapped to its own rectangle.
+function regionsGeometry(regions) {
+  const pos = [], uv = [], idx = [];
+  for (const r of regions) {
+    if (r.poly.length < 3) continue;
+    const g = shapeGeometry(r.poly), p = g.attributes.position, ix = g.index, base = pos.length / 3;
+    for (let i = 0; i < p.count; i++) { pos.push(p.getX(i), p.getY(i), 0); uv.push((p.getX(i) - r.cx) / r.vw + 0.5, (p.getY(i) - r.cy) / r.vh + 0.5); }
+    for (let i = 0; i < ix.count; i++) idx.push(base + ix.getX(i));
+    g.dispose();
   }
-  const g = tile.mesh.geometry, pos = g.attributes.position, uv = g.attributes.uv;
-  for (let i = 0; i < pos.count; i++) uv.setXY(i, (pos.getX(i) - cx) / vw + 0.5, (pos.getY(i) - cy) / vh + 0.5);
-  uv.needsUpdate = true;
-  updateSeams(tile, blank, cx, cy, vw, vh, x0, x1, y0, y1);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
+  g.setIndex(idx);
+  return g;
 }
 // Mirror mode: subtle lines where the video starts repeating, so the reflections read as reflections.
 const SEAM_W = 0.008;
@@ -260,18 +312,20 @@ function clipSegment(a, b, poly) {   // part of segment a-b inside the convex co
   }
   return [[a[0] + (b[0] - a[0]) * t0, a[1] + (b[1] - a[1]) * t0], [a[0] + (b[0] - a[0]) * t1, a[1] + (b[1] - a[1]) * t1]];
 }
-function updateSeams(tile, blank, cx, cy, vw, vh, x0, x1, y0, y1) {
+function updateSeams(tile, mirrors) {
   if (tile.isFloat) return;
-  const lines = [];
-  if (!blank) {
+  const lines = [];   // [a, b, poly]: a seam segment and the region polygon it is clipped to
+  for (const r of mirrors) {
+    const xs = r.poly.map(p => p[0]), ys = r.poly.map(p => p[1]);
+    const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
     for (let k = 0; k < 6; k++) {
-      for (const sx of [cx - (k + 0.5) * vw, cx + (k + 0.5) * vw]) if (sx > x0 && sx < x1) lines.push([[sx, y0 - 1], [sx, y1 + 1]]);
-      for (const sy of [cy - (k + 0.5) * vh, cy + (k + 0.5) * vh]) if (sy > y0 && sy < y1) lines.push([[x0 - 1, sy], [x1 + 1, sy]]);
+      for (const sx of [r.cx - (k + 0.5) * r.vw, r.cx + (k + 0.5) * r.vw]) if (sx > x0 && sx < x1) lines.push([[sx, y0 - 1], [sx, y1 + 1], r.poly]);
+      for (const sy of [r.cy - (k + 0.5) * r.vh, r.cy + (k + 0.5) * r.vh]) if (sy > y0 && sy < y1) lines.push([[x0 - 1, sy], [x1 + 1, sy], r.poly]);
     }
   }
   const pos = [], idx = [];
-  for (const [a, b] of lines) {
-    const seg = clipSegment(a, b, tile.poly); if (!seg) continue;
+  for (const [a, b, poly] of lines) {
+    const seg = clipSegment(a, b, poly); if (!seg) continue;
     const [p, q] = seg, dx = q[0] - p[0], dy = q[1] - p[1], L = Math.hypot(dx, dy); if (L < 1e-6) continue;
     const nx = -dy / L * SEAM_W / 2, ny = dx / L * SEAM_W / 2, base = pos.length / 3;
     pos.push(p[0] - nx, p[1] - ny, 0, q[0] - nx, q[1] - ny, 0, q[0] + nx, q[1] + ny, 0, p[0] + nx, p[1] + ny, 0);
@@ -825,12 +879,15 @@ function syncShapeFields() {
   $('wLabel').textContent = box ? 'W' : 'Across';
   $('faceRow').style.display = poly ? '' : 'none';
   $('cropRow').style.display = poly ? '' : 'none';
+  syncNestFields();
   $('wallRow').style.display = poly ? 'none' : '';
   $('flatRow').style.display = poly ? 'none' : '';
 }
 $('shape').addEventListener('change', syncShapeFields);
 $('maxCrop').addEventListener('change', refitAll);
-$('fillMode').addEventListener('change', refitAll);
+$('fillMode').addEventListener('change', () => { syncNestFields(); refitAll(); });
+for (const id of ['nestDepth', 'nestInc', 'nestFallback']) $(id).addEventListener('change', refitAll);
+function syncNestFields() { $('nestRow').style.display = $('fillMode').value === 'nested' && $('cropRow').style.display !== 'none' ? '' : 'none'; }
 syncShapeFields();
 $('useSample').addEventListener('click', () => { sources = [{ src: SAMPLE, label: 'Sample' }]; applySources(); });
 $('clear').addEventListener('click', async () => { await clearLibrary(); sources = []; disposeVideos(); setStatus('Cleared.'); });

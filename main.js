@@ -166,18 +166,49 @@ function shapeGeometry(pts) {   // pts centred on the piece's centroid, counter-
   const sh = new THREE.Shape(pts.map(p => new THREE.Vector2(p[0], p[1])));
   return new THREE.ShapeGeometry(sh);
 }
-// Map the video onto a polygon tile: cover its bounding box at the video's aspect, centred, so the face crops the frame.
-function fitPolyUV(tile, aspect) {
+// Sutherland–Hodgman clip of a convex polygon against the half-plane f(p) >= 0.
+function clipHalf(poly, f) {
+  const out = [];
+  for (let i = 0; i < poly.length; i++) {
+    const a = poly[i], b = poly[(i + 1) % poly.length], fa = f(a), fb = f(b);
+    if (fa >= 0) out.push(a);
+    if ((fa >= 0) !== (fb >= 0)) { const t = fa / (fa - fb); out.push([a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t]); }
+  }
+  return out;
+}
+// Fit the video onto a polygon tile. The video rectangle (at the video's aspect) is centred on the piece's
+// bounding box and grown towards covering it, but never so far that more than "max crop" % of its width or
+// height is cut off. Whatever the rectangle does not reach is either left blank (the mesh is clipped to the
+// rectangle, the dark backing shows) or filled with mirrored repeats of the video.
+function fitTile(tile, aspect) {
   if (!tile.poly || !aspect) return;
   const xs = tile.poly.map(p => p[0]), ys = tile.poly.map(p => p[1]);
-  const bw = Math.max(...xs) - Math.min(...xs), bh = Math.max(...ys) - Math.min(...ys);
-  let vw, vh;
-  if (bw / bh > aspect) { vw = bw; vh = bw / aspect; } else { vh = bh; vw = bh * aspect; }
+  const x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+  const bw = x1 - x0, bh = y1 - y0, cx = (x0 + x1) / 2, cy = (y0 + y1) / 2;
+  const contain = Math.min(bw, bh * aspect), cover = Math.max(bw, bh * aspect);
+  const crop = Math.max(0, Math.min(1, (+$('maxCrop').value || 0) / 100));
+  const vw = crop >= 1 ? cover : Math.min(cover, contain / (1 - crop)), vh = vw / aspect;
+  const blank = $('fillMode').value === 'blank';
+  let pts = tile.poly;
+  if (blank && vw < cover - 1e-6) {
+    pts = clipHalf(pts, p => p[0] - (cx - vw / 2));
+    pts = clipHalf(pts, p => (cx + vw / 2) - p[0]);
+    pts = clipHalf(pts, p => p[1] - (cy - vh / 2));
+    pts = clipHalf(pts, p => (cy + vh / 2) - p[1]);
+    if (pts.length < 3) pts = tile.poly;
+  }
+  if (pts !== tile.shapePts) {
+    tile.mesh.geometry.dispose();
+    tile.mesh.geometry = shapeGeometry(pts);
+    tile.shapePts = pts;
+  }
   const g = tile.mesh.geometry, pos = g.attributes.position, uv = g.attributes.uv;
-  for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / vw + 0.5, pos.getY(i) / vh + 0.5);
+  for (let i = 0; i < pos.count; i++) uv.setXY(i, (pos.getX(i) - cx) / vw + 0.5, (pos.getY(i) - cy) / vh + 0.5);
   uv.needsUpdate = true;
 }
-function refitTile(t) { if (t.poly && t.video && t.video.videoWidth) fitPolyUV(t, t.video.videoWidth / t.video.videoHeight); }
+const fitPolyUV = fitTile;
+function refitTile(t) { if (t.poly) fitTile(t, t.video && t.video.videoWidth ? t.video.videoWidth / t.video.videoHeight : 16 / 9); }
+function refitAll() { for (const t of tiles) refitTile(t); }
 
 // Interaction tuning
 const SCRUB_MAX_SPEED = 30;     // seconds of video per second at full stick deflection
@@ -345,13 +376,16 @@ function buildFaceTiles(s, g, level, bezel) {
     const m = new THREE.Mesh(shapeGeometry(pts), placeholder);
     m.position.set(c[0], c[1], 0);
     g.add(m);
+    const hit = new THREE.Mesh(shapeGeometry(pts), placeholder);   // full piece: shows where the video is clipped, and catches the beam there
+    hit.position.copy(m.position); hit.position.z = -0.001;
+    g.add(hit);
     const hl = makeRing(pts, RING_W);
     hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
     g.add(hl);
     const icon = makeIcon(); icon.position.copy(m.position); g.add(icon);
-    const tile = { mesh: m, w, h, video: null, label: '', highlight: hl, icon, surface: s.key, poly: pts, outline: pts };
-    fitPolyUV(tile, 16 / 9);
-    tiles.push(tile); tileOf.set(m, tile); made.push(tile);
+    const tile = { mesh: m, w, h, video: null, label: '', highlight: hl, icon, surface: s.key, poly: pts, outline: pts, hit, shapePts: pts };
+    fitTile(tile, 16 / 9);
+    tiles.push(tile); tileOf.set(m, tile); tileOf.set(hit, tile); made.push(tile);
   }
   return made;
 }
@@ -401,7 +435,7 @@ async function changeGrid(key, dCols, dRows) {
   const old = tiles.filter(t => t.surface === key);
   tiles = tiles.filter(t => t.surface !== key);
   for (const t of old) {
-    tileOf.delete(t.mesh);
+    tileOf.delete(t.mesh); if (t.hit) tileOf.delete(t.hit);
     const mat = t.mesh.material;
     if (t.video && !tiles.some(x => x.video === t.video)) {
       killVideo(t.video);
@@ -444,6 +478,7 @@ function makeVideo(src) {
 function makeMaterial(video) {
   const t = new THREE.VideoTexture(video);
   t.colorSpace = THREE.SRGBColorSpace;
+  t.wrapS = t.wrapT = THREE.MirroredRepeatWrapping;
   t.minFilter = THREE.LinearFilter; t.magFilter = THREE.LinearFilter;
   return new THREE.MeshBasicMaterial({ map: t, toneMapped: false });
 }
@@ -702,10 +737,13 @@ function syncShapeFields() {
   $('hField').style.display = poly ? 'none' : '';
   $('wLabel').textContent = box ? 'W' : 'Across';
   $('faceRow').style.display = poly ? '' : 'none';
+  $('cropRow').style.display = poly ? '' : 'none';
   $('wallRow').style.display = poly ? 'none' : '';
   $('flatRow').style.display = poly ? 'none' : '';
 }
 $('shape').addEventListener('change', syncShapeFields);
+$('maxCrop').addEventListener('change', refitAll);
+$('fillMode').addEventListener('change', refitAll);
 syncShapeFields();
 $('useSample').addEventListener('click', () => { sources = [{ src: SAMPLE, label: 'Sample' }]; applySources(); });
 $('clear').addEventListener('click', async () => { await clearLibrary(); sources = []; disposeVideos(); setStatus('Cleared.'); });
@@ -1299,6 +1337,7 @@ function endDrag(hand, target, now) {
 }
 function rayTargets() {
   const t = tiles.map(x => x.mesh);
+  for (const x of tiles) if (x.hit) t.push(x.hit);
   if (focused && !anim) t.push(floatMesh);
   if (panelMesh.visible) t.unshift(panelMesh);   // button panel sits in front of its tile; test it first
   return t;

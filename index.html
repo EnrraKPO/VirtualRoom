@@ -69,6 +69,13 @@
         Split each face: level <input type="number" id="faceLevel" min="1" max="4" value="1" />
         <span style="opacity:.7">(1 = one screen per face; a triangle at level L has L² screens)</span>
       </div>
+      <div class="row" id="cropRow">
+        Max crop <input type="number" id="maxCrop" min="0" max="100" step="5" value="25" />%
+        Fill the rest with <select id="fillMode">
+          <option value="blank">blank</option>
+          <option value="mirror">mirrored video</option>
+        </select>
+      </div>
       <div class="row" id="wallRow">
         Walls: <input type="number" id="wallCols" min="1" max="8" value="1" /> x
         <input type="number" id="wallRows" min="1" max="8" value="1" />

@@ -500,8 +500,8 @@ function setRingProgress(ring, progress) {
 // Sound icon: speaker (green = audible, grey with red cross = muted), pause bars when paused.
 const ICON_DEG = 2.6, ICON_LIFT = 0.06;   // apparent size (degrees) and how far it floats in front of the surface (m)
 const iconMats = {};
-function iconMaterial(audible, paused, top = false, liked = false) {
-  const key = (audible ? 'a' : 'm') + (paused ? 'p' : '') + (top ? 't' : '') + (liked ? 'l' : '');
+function iconMaterial(audible, paused, top = false, liked = false, pinned = false) {
+  const key = (audible ? 'a' : 'm') + (paused ? 'p' : '') + (top ? 't' : '') + (liked ? 'l' : '') + (pinned ? 'n' : '');
   if (iconMats[key]) return iconMats[key];
   const cv = document.createElement('canvas'); cv.width = cv.height = 128;
   const c = cv.getContext('2d');
@@ -515,6 +515,10 @@ function iconMaterial(audible, paused, top = false, liked = false) {
   if (liked) {   // small heart, bottom-left
     c.fillStyle = '#ff4a6a'; c.beginPath();
     c.moveTo(36, 112); c.bezierCurveTo(14, 96, 18, 72, 36, 80); c.bezierCurveTo(54, 72, 58, 96, 36, 112); c.fill();
+  }
+  if (pinned) {  // small pin, top-right: head + needle
+    c.fillStyle = '#ffd24a'; c.beginPath(); c.arc(100, 28, 11, 0, Math.PI * 2); c.fill();
+    c.strokeStyle = '#ffd24a'; c.lineWidth = 5; c.beginPath(); c.moveTo(100, 38); c.lineTo(100, 60); c.stroke();
   }
   const tex = new THREE.CanvasTexture(cv); tex.colorSpace = THREE.SRGBColorSpace;
   return iconMats[key] = new THREE.MeshBasicMaterial({ map: tex, transparent: true, depthWrite: false, depthTest: !top });
@@ -648,6 +652,7 @@ async function layoutAction(tile, act) {
   else if (act === 'add') { p.children.push(leafNode(p)); changed = p; }
   else if (act === 'remove') {
     if (!p) return;
+    if (isPinnedKey(t.label)) { setStatus('Pinned videos stay up: unpin it first.'); return; }
     p.children = p.children.filter(c => c !== node);
     if (p.children.length === 1) {   // a group of one dissolves into its parent
       const only = p.children[0];
@@ -820,9 +825,10 @@ function disposeVideos() {
 function setTileSource(tile, src, label, enter = popIn) {
   if (tile.isFloat) { setTileSource(tile.origin, src, label); syncFloat(); return; }
   cancelTransition(tile);
-  const old = tile.video, oldMat = tile.mesh.material;
+  const old = tile.video, oldMat = tile.mesh.material, oldLabel = tile.label;
   const v = makeVideo(src), mat = makeMaterial(v);
   tile.video = v; tile.label = label;
+  unpinIfGone(oldLabel);
   if (tile.poly) v.addEventListener('loadedmetadata', () => { if (tile.video === v && tile.mesh.material === mat) refitTile(tile); }, { once: true });
   enterWith(tile, v, mat, () => { tile.mesh.material = mat; if (tile.poly) refitTile(tile); retire(old, oldMat); }, enter);
 }
@@ -917,6 +923,7 @@ function rebuildLikedKeys() {
   likedKeys = new Set(library.filter(e => ids.has(likeId(e))).map(e => e.key));
   const n = likes.length, avail = likedKeys.size;
   $('likeInfo').textContent = n ? `${n} liked${avail < n ? ` (${avail} available)` : ''}` : 'no liked videos yet';
+  rebuildPinnedKeys();
 }
 const isLikedKey = key => likedKeys.has(key);
 const likedEntries = () => library.filter(e => likedKeys.has(e.key));
@@ -945,9 +952,9 @@ async function deployLiked(tile) {
 }
 // Dealing order per the "Deal" setting: all videos / liked first / liked only. Returns a function yielding entries.
 function makeDealer(exclude = new Set()) {
-  const mode = $('dealMode').value, liked = likedEntries();
+  const mode = $('dealMode').value, liked = likedEntries().filter(e => !pinnedKeys.has(e.key));
   const fresh = arr => shuffled(arr.filter(e => !exclude.has(e.key)));
-  let first = mode !== 'all' && liked.length ? fresh(liked) : [];
+  let first = (mode !== 'all' && liked.length ? fresh(liked) : []).concat(fresh(pinnedEntries()));   // popped from the end: pinned first
   const restPool = mode === 'likedOnly' && liked.length ? liked : library;
   let rest = [];
   return () => {
@@ -958,8 +965,40 @@ function makeDealer(exclude = new Set()) {
   };
 }
 $('clearLikes').addEventListener('click', async () => { likes = []; rebuildLikedKeys(); await persistLikes(); });
+// ---- Pins: videos that stay up. A pinned screen cannot be removed, is skipped by Shuffle and ignores the swap tap;
+// dropping another video onto it replaces and unpins. Pinned videos are dealt first after a full rebuild.
+let pins = [];             // [{ handle, rootName, rel, name }]
+let pinnedKeys = new Set();
+function rebuildPinnedKeys() {
+  const ids = new Set(pins.map(likeId));
+  pinnedKeys = new Set(library.filter(e => ids.has(likeId(e))).map(e => e.key));
+  $('pinInfo').textContent = pins.length ? `${pins.length} pinned` : '';
+}
+const isPinnedKey = key => pinnedKeys.has(key);
+const tilePinned = t => { const o = t && t.isFloat ? t.origin : t; return !!o && isPinnedKey(o.label); };
+const pinnedEntries = () => library.filter(e => pinnedKeys.has(e.key));
+async function persistPins() { await kvSet('pins', pins.map(l => ({ handle: l.handle, rootName: l.rootName, rel: l.rel, name: l.name }))); }
+async function togglePin(tile) {
+  const t = tile.isFloat ? tile.origin : tile; if (!t) return;
+  const e = library.find(x => x.key === t.label);
+  if (!e) { setStatus('Only library videos can be pinned.'); return; }
+  const id = likeId(e), i = pins.findIndex(l => likeId(l) === id);
+  if (i >= 0) pins.splice(i, 1); else pins.push({ handle: e.handle, rootName: e.rootName, rel: e.rel, name: e.name });
+  rebuildPinnedKeys();
+  await persistPins();
+}
+async function unpinKey(key) {
+  const e = library.find(x => x.key === key); if (!e) return;
+  const id = likeId(e); pins = pins.filter(l => likeId(l) !== id);
+  rebuildPinnedKeys();
+  await persistPins();
+}
+// A pinned video that just left its last screen (replaced by an explicit drop) is unpinned
+function unpinIfGone(label) { if (label && isPinnedKey(label) && !tiles.some(t => t.label === label)) unpinKey(label); }
+$('clearPins').addEventListener('click', async () => { pins = []; rebuildPinnedKeys(); await persistPins(); });
 $('exportLikes').addEventListener('click', () => {
-  const blob = new Blob([JSON.stringify(likes.map(l => ({ folder: l.rootName, path: l.rel, name: l.name })), null, 2)], { type: 'application/json' });
+  const row = l => ({ folder: l.rootName, path: l.rel, name: l.name });
+  const blob = new Blob([JSON.stringify({ likes: likes.map(row), pins: pins.map(row) }, null, 2)], { type: 'application/json' });
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'video-room-likes.json'; a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 1000);
 });
@@ -1025,11 +1064,18 @@ function shuffled(arr) {
   for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
   return a;
 }
+function clearTile(t) {
+  cancelTransition(t);
+  const v = t.video, m = t.mesh.material;
+  t.mesh.material = placeholder; t.video = null; t.label = '';
+  retire(v, m);
+}
 async function dealRandom() {
   if (!library.length) return;
-  disposeVideos();
-  const next = makeDealer();
-  for (const t of tiles) { const e = next(); setTileSource(t, await urlFor(e), e.key); }
+  const keep = new Set(tiles.filter(t => isPinnedKey(t.label)));
+  if (!keep.size) disposeVideos(); else { unfocus(true); for (const t of tiles) if (!keep.has(t)) clearTile(t); }
+  const next = makeDealer(new Set([...keep].map(t => t.label)));
+  for (const t of tiles) { if (keep.has(t)) continue; const e = next(); setTileSource(t, await urlFor(e), e.key); }
   setStatus(`${tiles.length} screens, ${videoEls.length} decoder(s) from ${library.length} library videos.`);
 }
 // Swap one tile to a random library video not currently on any screen (if possible)
@@ -1083,6 +1129,7 @@ async function hasPermission(r) {
 }
 (async () => {
   likes = (await kvGet('likes')) || [];
+  pins = (await kvGet('pins')) || [];
   const dm = await kvGet('dealMode'); if (dm) $('dealMode').value = dm;
   const tr = await kvGet('transitions'); if (tr) $('transitions').value = tr;
   rebuildLikedKeys();
@@ -1167,8 +1214,9 @@ function copyTo(src, dst) {
   if (!src || !dst || src === dst || !src.video) return;
   unfocus(true);
   cancelTransition(src); cancelTransition(dst);
-  const old = dst.video, oldMat = dst.mesh.material, mat = src.mesh.material;
+  const old = dst.video, oldMat = dst.mesh.material, mat = src.mesh.material, oldLabel = dst.label;
   dst.video = src.video; dst.label = src.label;
+  unpinIfGone(oldLabel);
   enterWith(dst, src.video, mat, () => { dst.mesh.material = mat; refitTile(dst); retire(old, oldMat); });
 }
 
@@ -1387,6 +1435,7 @@ const LAYOUT_BUTTONS = [
 ];
 const ZOOM_BUTTONS = [{ label: '−', title: 'zoom', dz: -1 }, { label: '+', title: 'zoom', dz: 1 }, { label: '↺', title: 'reset', reset: true }];
 const LIKE_BUTTON = { label: '♥', title: 'like', like: true };
+const PIN_BUTTON = { label: '📌', title: 'pin', pin: true };
 let panelBtns = [];          // current layout: buttons with x0/x1 (canvas px)
 let panelHoverBtn = -1;
 function panelLayout() {
@@ -1395,7 +1444,8 @@ function panelLayout() {
   LAYOUT_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP; });
   x += 150;                                   // room for the zoom value
   ZOOM_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W, zoomX: x }); x += BTN_W + BTN_GAP; });
-  x += 26; out.push({ ...LIKE_BUTTON, x0: x, x1: x + BTN_W });
+  x += 26; out.push({ ...LIKE_BUTTON, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP;
+  out.push({ ...PIN_BUTTON, x0: x, x1: x + BTN_W });
   return out;
 }
 function panelButtonAt(uv) {
@@ -1423,6 +1473,7 @@ function pressPanelButton(tile, idx) {
   }
   if (b.reset) { resetView(t); drawPanel(tile); return; }
   if (b.like) { toggleLike(t).then(() => drawPanel(tile)); return; }
+  if (b.pin) { togglePin(t).then(() => drawPanel(tile)); return; }
   if (b.dz) {
     if (!t.fit) return;
     const z0 = t.view && t.view.zoom != null ? t.view.zoom : t.fit.zoomDefault;
@@ -1457,13 +1508,15 @@ function drawPanel(tile) {
   if (tile.isFloat) c.fillText(`${floatGroup.scale.x.toFixed(floatGroup.scale.x < 10 ? 1 : 0)} m${floatTile.custom ? '*' : ''}`, zb.x0 - 80, 90);
   else c.fillText(fit ? `${zoom.toFixed(2)}×${src.view ? '*' : ''}` : '', zb.x0 - 80, 90);
   let labelled = new Set();
-  const liked = src && isLikedKey(src.label);
+  const liked = src && isLikedKey(src.label), pinned = src && isPinnedKey(src.label);
   panelBtns.forEach((b, i) => {
-    c.fillStyle = i === panelHoverBtn ? '#4aa8ff' : '#2e2e2e';
+    c.fillStyle = i === panelHoverBtn ? '#4aa8ff' : pinned && b.pin ? '#5a4a10' : '#2e2e2e';
     c.beginPath(); c.roundRect(b.x0, 44, BTN_W, 88, 14); c.fill();
-    const off = b.act === 'remove' && !(node && node.parent);   // the only piece of a surface cannot be removed
+    const off = b.act === 'remove' && (!(node && node.parent) || pinned);   // the only piece of a surface, or a pinned one, cannot be removed
     c.fillStyle = b.like ? (liked ? '#ff4a6a' : '#777') : off ? '#666' : '#fff'; c.font = 'bold 56px system-ui, sans-serif';
+    c.globalAlpha = b.pin && !pinned ? 0.35 : 1;
     c.fillText(b.label, b.x0 + BTN_W / 2, 88);
+    c.globalAlpha = 1;
     const title = b.title;
     if (!labelled.has(title)) {
       labelled.add(title);
@@ -1546,8 +1599,22 @@ const deploySlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest
   c.fillText('deploy →', 128, 225);
 }) });
 const deploySlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), deploySlotMat);
-deploySlot.position.set(-BOARD_W / 2 + 0.09, 0, 0.002); deploySlot.renderOrder = 26;
+deploySlot.position.set(-BOARD_W / 2 + 0.09, 0, 0.002); deploySlot.renderOrder = 26; deploySlot.userData.slot = 'liked';
 board.add(deploySlot);
+const shuffleSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, map: slotTexture(c => {
+  c.strokeStyle = '#4aa8ff'; c.lineWidth = 16; c.lineCap = 'round'; c.lineJoin = 'round';   // two crossing arrows
+  c.beginPath(); c.moveTo(50, 70); c.lineTo(100, 70); c.lineTo(156, 140); c.lineTo(200, 140); c.stroke();
+  c.beginPath(); c.moveTo(50, 140); c.lineTo(100, 140); c.lineTo(156, 70); c.lineTo(200, 70); c.stroke();
+  c.fillStyle = '#4aa8ff';
+  c.beginPath(); c.moveTo(190, 48); c.lineTo(222, 70); c.lineTo(190, 92); c.fill();
+  c.beginPath(); c.moveTo(190, 118); c.lineTo(222, 140); c.lineTo(190, 162); c.fill();
+  c.fillStyle = '#fff'; c.font = 'bold 30px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('shuffle', 128, 225);
+}) });
+const shuffleSlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), shuffleSlotMat);
+shuffleSlot.position.set(-BOARD_W / 2 + 0.24, 0, 0.002); shuffleSlot.renderOrder = 26; shuffleSlot.userData.slot = 'shuffle';
+board.add(shuffleSlot);
+const boardSlots = [deploySlot, shuffleSlot];
 const BOARD_SLOT = { isBoard: true, label: '' };   // drag source sentinel for the deploy slot
 const _bf = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bm = new THREE.Matrix4();
 let boardYaw = null, boardHot = false;
@@ -1571,7 +1638,7 @@ function updateBoard(dt) {
   const gazing = toBoard.dot(_bf) > Math.cos(THREE.MathUtils.degToRad(25));
   const target = gazing || boardHot ? 1 : 0.3;
   boardMat.opacity += (target - boardMat.opacity) * Math.min(1, dt * 8);
-  deploySlotMat.opacity = boardMat.opacity;
+  deploySlotMat.opacity = shuffleSlotMat.opacity = boardMat.opacity;
 }
 
 // Per-frame HUD: contour progress on the hovered screen, floating sound icons on hovered or audible screens.
@@ -1589,7 +1656,7 @@ function updateHud() {
     const show = t === focusTile || (v && !v.muted && !(focused && t === focused));
     if (!show) { t.icon.visible = false; continue; }
     t.icon.visible = true;
-    t.icon.material = iconMaterial(v && !v.muted, v && v.paused, t.isFloat, isLikedKey(t.label));
+    t.icon.material = iconMaterial(v && !v.muted, v && v.paused, t.isFloat, isLikedKey(t.label), isPinnedKey(t.label));
     t.mesh.getWorldPosition(_iw);
     const size = 2 * _eye.distanceTo(_iw) * Math.tan(THREE.MathUtils.degToRad(ICON_DEG / 2)) * (t === focusTile ? 1 : 0.7);
     if (t.isFloat) {   // unit space inside floatGroup
@@ -1647,7 +1714,7 @@ function updateHand(hand, dt, now) {
   raycaster.ray.origin.setFromMatrixPosition(hand.ctrl.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
   const hit = pickHit();
-  const onPanel = hit && hit.object === panelMesh, onSlot = hit && hit.object === deploySlot;
+  const onPanel = hit && hit.object === panelMesh, slot = hit ? hit.object.userData.slot : null, onSlot = !!slot;
   const tile = hit ? (onPanel ? focusTile : onSlot ? null : tileFor(hit.object)) : null;
   if (hit) { hand.dot.position.copy(hit.point); hand.dot.visible = true; hand.beam.scale.z = hit.distance; }
   else { hand.dot.visible = false; hand.beam.scale.z = 10; }
@@ -1719,7 +1786,9 @@ function updateHand(hand, dt, now) {
   // Press on a screen starts a potential drag; release decides: same screen = tap action,
   // different screen = two-screen action (trigger drag = swap places, grip drag = copy).
   if (trigger && !p.trigger && tile) startDrag(hand, 'swap', tile, now, lx, ly, hit);
-  if (trigger && !p.trigger && onSlot) startDrag(hand, 'liked', BOARD_SLOT, now);
+  if (trigger && !p.trigger && slot === 'liked') startDrag(hand, 'liked', BOARD_SLOT, now);
+  if (trigger && !p.trigger && slot === 'shuffle') hand.tapShuffle = true;         // tap (press + release on the slot) = shuffle, pinned screens stay
+  if (!trigger && p.trigger && hand.tapShuffle) { hand.tapShuffle = false; if (slot === 'shuffle') dealRandom(); }
   if (grip && !p.grip && tile) startDrag(hand, 'copy', tile, now, lx, ly, hit);
   if (!trigger && p.trigger && hand.drag && (hand.drag.kind === 'swap' || hand.drag.kind === 'liked')) endDrag(hand, tile, now);
   if (!grip && p.grip && hand.drag && hand.drag.kind === 'copy') endDrag(hand, tile, now);
@@ -1877,14 +1946,15 @@ function endDrag(hand, target, now) {
   if (target && target !== from) {
     if (kind === 'swap') swapPlaces(from, target); else copyTo(from, target);
   } else if (target === from) {
-    if (kind === 'swap') swapTile(from); else toggleAudio(from, now - t0 >= LONG_GRIP_MS);
+    if (kind === 'swap') { if (tilePinned(from)) setStatus('Pinned: this screen keeps its video.'); else swapTile(from); }
+    else toggleAudio(from, now - t0 >= LONG_GRIP_MS);
   }
 }
 // Pick in layers that match the draw order, not by distance: the station board slot and the button panel first,
 // then the focus screen (it draws over the room even when it sits beyond a wall), then the room's screens.
 function pickHit() {
   const layers = [];
-  if (renderer.xr.isPresenting) layers.push([deploySlot]);
+  if (renderer.xr.isPresenting) layers.push(boardSlots);
   if (panelMesh.visible) layers.push([panelMesh]);
   if (focused && !anim) layers.push([floatMesh]);
   const room = tiles.map(x => x.mesh);
@@ -1905,7 +1975,7 @@ addEventListener('pointerup', e => {
   if (e.target !== renderer.domElement || renderer.xr.isPresenting) return;
   if (moved) return;
   if (e.button === 0 && mouseTile && panelHoverBtn >= 0) { pressPanelButton(mouseTile, panelHoverBtn); return; }
-  if (e.button === 0 && mouseTile) swapTile(mouseTile);
+  if (e.button === 0 && mouseTile && !tilePinned(mouseTile)) swapTile(mouseTile);
   if (e.button === 2 && mouseTile) toggleAudio(mouseTile, e.shiftKey);
 });
 renderer.domElement.addEventListener('contextmenu', e => e.preventDefault());

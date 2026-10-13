@@ -34,13 +34,18 @@
         Shape <select id="shape">
           <option value="box">Box</option>
           <option value="prism">Prism (N walls)</option>
+          <option value="tetra">Tetrahedron (4 faces)</option>
+          <option value="octa">Octahedron (8 faces)</option>
+          <option value="dodeca">Dodecahedron (12 faces)</option>
+          <option value="icosa">Icosahedron (20 faces)</option>
+          <option value="geo2">Geodesic sphere (80 faces)</option>
         </select>
         <span id="prismFields">Walls <input type="number" id="prismN" min="3" max="48" step="1" value="6" /></span>
       </div>
       <div class="row">
         <span id="wLabel">W</span> <input type="number" id="roomW" min="2" max="30" step="0.5" value="5" />
         <span id="dField">D <input type="number" id="roomD" min="2" max="30" step="0.5" value="5" /></span>
-        H <input type="number" id="roomH" min="2" max="15" step="0.5" value="3" />
+        <span id="hField">H <input type="number" id="roomH" min="2" max="15" step="0.5" value="3" /></span>
         <span>m</span>
       </div>
       <div class="row">
@@ -51,11 +56,15 @@
 
     <fieldset>
       <legend>Screens per surface</legend>
-      <div class="row">
+      <div class="row" id="faceRow">
+        Split each face: level <input type="number" id="faceLevel" min="1" max="4" value="1" />
+        <span style="opacity:.7">(1 = one screen per face; a triangle at level L has L² screens)</span>
+      </div>
+      <div class="row" id="wallRow">
         Walls: <input type="number" id="wallCols" min="1" max="8" value="1" /> x
         <input type="number" id="wallRows" min="1" max="8" value="1" />
       </div>
-      <div class="row">
+      <div class="row" id="flatRow">
         Floor/ceiling: <input type="number" id="flatCols" min="1" max="8" value="1" /> x
         <input type="number" id="flatRows" min="1" max="8" value="1" />
       </div>

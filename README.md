@@ -25,7 +25,7 @@ presence and whether an `immersive-vr` session is supported.
 
 | Section | What it does |
 |---|---|
-| Room | **Shape**: Box (W × D × H) or **Prism** with N walls (3–48), sized by the width across flats and H. A prism's walls get the normal wall grid; its N-gon floor and ceiling carry the largest square grid that fits, backed by a dark polygon. "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. |
+| Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere) standing on one face, sized by the width across (twice the floor face's inradius; height follows). A prism's walls get the normal wall grid, its N-gon floor and ceiling carry the largest square grid that fits. A polyhedron's faces are each one screen showing the video centre-cropped to the face shape; "Split each face" (level 1–4) cuts triangles into L² screens and pentagons into a fan of 5 × (L−1)². "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. |
 | Screens per surface | Starting grid (cols × rows) for walls and for floor/ceiling. Optional bezels. **Apply layout** rebuilds everything and resets per-wall grids and room scale. |
 | Videos | **Add folder…** adds a folder to the library (File System Access API); each folder row has a **subfolders** checkbox (on by default) and an × to remove it. **Add files…** adds one or more individual videos as a row. Rows persist across launches in IndexedDB; after a restart a row says "click to reopen" until you click it to re-grant read access. **Shuffle** redeals from the combined pool; **Clear** removes every row. "Use sample video" shows the sample until the next shuffle or layout change. Also: "Start each video at a random point", "Auto-jump every N s", "Separate decoder per screen" (stress test for non-library mode), "Mute all". |
 | Stats | render fps, decoder count, audible count, dropped video frames %, stalled/paused. |
@@ -45,7 +45,7 @@ bottom edge (progress bar, name, time, speaker icon, pause mark, grid buttons).
 | A / X | pause / play |
 | B / Y | focus: lift the screen off the wall into a big floating panel; again to send it back |
 | Stick click | jump to a random point in the timeline |
-| Strip buttons | − / + columns and rows for **that wall only** (other walls keep playing) |
+| Strip buttons | − / + columns and rows for **that wall only** (other walls keep playing); on a polyhedron face − / + change its split level |
 
 **Drag (press on one screen, release on another)**
 
@@ -74,10 +74,17 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
 
 ## How it works (for future changes)
 
-- **Shapes**: `shape` is `'box'` or `'prism'` (N walls). `surfaces()` returns the face list for the
-  current shape; prism walls are keyed `wall0..wallN-1`, floor/roof carry a `poly` descriptor for
-  the polygon backing. `wallPlanes()` gives the walls as outward normals + distances and drives
-  both `clampRig()` and `focusDistance()`, so new shapes only need those two functions updated.
+- **Shapes**: `shape` is `'box'`, `'prism'` (N walls) or a polyhedron key. `surfaces()` returns the
+  face list for the current shape; prism walls are keyed `wall0..`, polyhedron faces `face0..` with
+  `kind: 'face'`, a local 2D polygon `pts` and a `quat`. `wallPlanes()` gives walls/faces as outward
+  normals + distances from the room centre `(0, polyCentreY, 0)` and drives both `clampRig()` (sloped
+  faces push the head back horizontally) and `focusDistance()`.
+- **Polyhedra**: `polyhedron(kind, across)` builds vertices (`polyVertices`), takes the convex hull by
+  brute force (`hullFaces`, fine for ≤ 42 vertices), rotates face 0 down to be the floor, scales so the
+  floor's inradius is `across / 2`, and returns per-face centroid, quaternion (local z = inward normal,
+  local y = up along the face) and counter-clockwise polygon. `splitPolygon()` subdivides; `buildFaceTiles()`
+  makes one `ShapeGeometry` tile per piece with `tile.poly`; `fitPolyUV()` crops the video (cover-fit to
+  the piece's bounding box) and is re-run on `loadedmetadata`, swap and copy via `refitTile()`.
 - **Tiles**: `tiles[]` of `{ mesh, w, h, video, label, highlight, surface }`. `grids[key]` holds
   cols/rows per surface; `buildSurface()` builds one surface, `changeGrid()` rebuilds one
   surface without touching the others.
@@ -106,6 +113,8 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
 
 ## Performance notes
 
+- The 80-face geodesic sphere means 80 decoders at level 1; expect to need a smaller library or
+  a lower split than on the other shapes.
 - Decoders, not screens, are the cost. RTX 5090 (4× NVDEC) handles 20+ 1080p streams
   easily; 4K per tile costs ~4× each. Check chrome://gpu says video decode is hardware
   accelerated, and chrome://media-internals shows `D3D11VideoDecoder`.

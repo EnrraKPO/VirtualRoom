@@ -5,13 +5,18 @@ const SAMPLE = 'https://commondatastorage.googleapis.com/gtv-videos-bucket/sampl
 
 // ---- Room dimensions (meters), read from the panel ----
 let W = 5, D = 5, H = 3;
-let shape = 'box', N = 4;   // 'box' or 'prism' with N walls; for a prism W is the width across flats and D = W
+let shape = 'box', N = 4;   // 'box', 'prism' (N walls) or a polyhedron; for non-box shapes W is the width across flats and D = W
+const POLY_SHAPES = { tetra: 1, octa: 1, dodeca: 1, icosa: 1, geo2: 1 };
+const isPoly = () => !!POLY_SHAPES[shape];
 
-// Walls as planes: outward unit normal (nx, nz) and distance from the room centre, unscaled.
+// Walls/faces as planes: outward unit normal and distance from the room centre, unscaled.
+// The centre is (0, polyCentreY, 0) in room space; floor faces are left out (the y clamp handles them).
+let polyCentreY = 0;
 function wallPlanes() {
-  if (shape === 'box') return [{ nx: 0, nz: -1, dist: D / 2 }, { nx: 0, nz: 1, dist: D / 2 }, { nx: -1, nz: 0, dist: W / 2 }, { nx: 1, nz: 0, dist: W / 2 }];
+  if (shape === 'box') return [{ nx: 0, ny: 0, nz: -1, dist: D / 2 }, { nx: 0, ny: 0, nz: 1, dist: D / 2 }, { nx: -1, ny: 0, nz: 0, dist: W / 2 }, { nx: 1, ny: 0, nz: 0, dist: W / 2 }];
+  if (isPoly()) return polyhedron(shape, W).faces.filter(f => f.n.y > -0.99).map(f => ({ nx: f.n.x, ny: f.n.y, nz: f.n.z, dist: f.dist }));
   const a = W / 2, out = [];
-  for (let i = 0; i < N; i++) { const phi = i * 2 * Math.PI / N; out.push({ nx: Math.sin(phi), nz: -Math.cos(phi), dist: a }); }
+  for (let i = 0; i < N; i++) { const phi = i * 2 * Math.PI / N; out.push({ nx: Math.sin(phi), ny: 0, nz: -Math.cos(phi), dist: a }); }
   return out;
 }
 function surfaces() {
@@ -23,6 +28,10 @@ function surfaces() {
     { key: 'floor', kind: 'flat', size: [W, D], pos: [0, 0, 0],          rot: [-Math.PI / 2, 0, 0] },
     { key: 'roof',  kind: 'flat', size: [W, D], pos: [0, H, 0],          rot: [ Math.PI / 2, 0, 0] },
   ];
+  if (isPoly()) {
+    // Every face is one surface; its tiles are the face polygon split into level² triangles.
+    return polyhedron(shape, W).faces.map((f, i) => ({ key: 'face' + i, kind: 'face', pts: f.pts, pos: [f.c.x, f.c.y, f.c.z], quat: f.quat }));
+  }
   // Prism: N walls in a ring (apothem a), N-gon floor and roof carrying the largest inscribed square grid.
   const a = W / 2, R = a / Math.cos(Math.PI / N), ww = 2 * a * Math.tan(Math.PI / N);
   const out = [];
@@ -37,6 +46,119 @@ function surfaces() {
   out.push({ key: 'roof',  kind: 'flat', size: [sq, sq], pos: [0, H, 0], rot: [ Math.PI / 2, 0, 0], poly: { R, N, start: -Math.PI / 2 + Math.PI / N } });
   return out;
 }
+
+// ---- Polyhedra: regular solids standing on one face, floor at y = 0, "across" = twice the floor face's inradius ----
+const PHI = (1 + Math.sqrt(5)) / 2;
+function polyVertices(kind) {
+  const V = [];
+  const add = (x, y, z) => V.push(new THREE.Vector3(x, y, z));
+  const signs = [-1, 1];
+  if (kind === 'tetra') { add(1, 1, 1); add(1, -1, -1); add(-1, 1, -1); add(-1, -1, 1); }
+  else if (kind === 'octa') { for (const s of signs) { add(s, 0, 0); add(0, s, 0); add(0, 0, s); } }
+  else if (kind === 'dodeca') {
+    for (const a of signs) for (const b of signs) for (const c of signs) add(a, b, c);
+    for (const a of signs) for (const b of signs) { add(0, a / PHI, b * PHI); add(a / PHI, b * PHI, 0); add(a * PHI, 0, b / PHI); }
+  } else { // icosahedron, optionally subdivided into a geodesic sphere
+    for (const a of signs) for (const b of signs) { add(0, a, b * PHI); add(a, b * PHI, 0); add(b * PHI, 0, a); }
+    if (kind === 'geo2') {
+      const faces = hullFaces(V);
+      const seen = new Map();
+      const keep = v => { v.normalize(); const k = v.toArray().map(x => x.toFixed(5)).join(','); if (!seen.has(k)) seen.set(k, v); };
+      for (const v of V) keep(v.clone());
+      for (const f of faces) for (let i = 0; i < 3; i++) keep(f.verts[i].clone().add(f.verts[(i + 1) % 3]));
+      return [...seen.values()];
+    }
+  }
+  return V;
+}
+// Convex hull of a small symmetric vertex set: planes through three vertices with every other vertex on one side.
+function hullFaces(V) {
+  const faces = [], n = V.length, e1 = new THREE.Vector3(), e2 = new THREE.Vector3();
+  for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) for (let k = j + 1; k < n; k++) {
+    const nrm = e1.subVectors(V[j], V[i]).cross(e2.subVectors(V[k], V[i]));
+    if (nrm.lengthSq() < 1e-12) continue;
+    nrm.normalize();
+    const d = nrm.dot(V[i]);
+    let pos = 0, neg = 0; const on = [];
+    for (let m = 0; m < n; m++) { const t = nrm.dot(V[m]) - d; if (t > 1e-6) pos++; else if (t < -1e-6) neg++; else on.push(m); }
+    if (pos && neg) continue;
+    const out = pos ? nrm.clone().negate() : nrm.clone(), dist = pos ? -d : d;
+    if (faces.some(f => f.n.dot(out) > 0.9999)) continue;
+    faces.push({ n: out, dist, verts: on.map(m => V[m]) });
+  }
+  return faces;
+}
+const polyCache = {};
+function polyhedron(kind, across) {
+  const ck = kind + ':' + across;
+  if (polyCache[ck]) return polyCache[ck];
+  let V = polyVertices(kind);
+  let faces = hullFaces(V);
+  // Stand on face 0: rotate its outward normal to -y, then turn so one floor edge runs along x.
+  const q = new THREE.Quaternion().setFromUnitVectors(faces[0].n.clone(), new THREE.Vector3(0, -1, 0));
+  for (const v of V) v.applyQuaternion(q);
+  faces = hullFaces(V);
+  const floor = faces.reduce((a, f) => f.n.y < a.n.y ? f : a);
+  const e = floor.verts[1].clone().sub(floor.verts[0]);
+  const qy = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.atan2(e.z, e.x));
+  for (const v of V) v.applyQuaternion(qy);
+  faces = hullFaces(V);
+  const fl = faces.reduce((a, f) => f.n.y < a.n.y ? f : a);
+  const scale = (across / 2) / fl.dist;
+  for (const v of V) v.multiplyScalar(scale).y += across / 2;
+  const centre = new THREE.Vector3(0, across / 2, 0);
+  const up = new THREE.Vector3(0, 1, 0);
+  const out = faces.map(f => {
+    f.dist *= scale;
+    const c = f.verts.reduce((a, v) => a.add(v), new THREE.Vector3()).multiplyScalar(1 / f.verts.length);
+    const nin = f.n.clone().negate();
+    let u = new THREE.Vector3().crossVectors(up, nin);
+    if (u.lengthSq() < 1e-6) u.set(1, 0, 0); else u.normalize();
+    const v = new THREE.Vector3().crossVectors(nin, u);        // "up" along the face
+    const quat = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(u, v, nin));
+    const pts = f.verts.map(p => { const d = p.clone().sub(c); return [d.dot(u), d.dot(v)]; });
+    pts.sort((a, b) => Math.atan2(a[1], a[0]) - Math.atan2(b[1], b[0]));   // counter-clockwise seen from inside
+    return { n: f.n, dist: f.dist, c, quat, pts };
+  });
+  const top = Math.max(...V.map(v => v.y));
+  return polyCache[ck] = { faces: out, centre, top };
+}
+// Split a convex polygon into pieces: triangles get level² sub-triangles, other polygons fan from the centre first.
+function splitPolygon(pts, level) {
+  if (level <= 1) return [pts];
+  const tri = (A, B, C, L) => {
+    const P = (i, j) => [A[0] + (B[0] - A[0]) * i / L + (C[0] - A[0]) * j / L, A[1] + (B[1] - A[1]) * i / L + (C[1] - A[1]) * j / L];
+    const out = [];
+    for (let i = 0; i < L; i++) for (let j = 0; j < L - i; j++) {
+      out.push([P(i, j), P(i + 1, j), P(i, j + 1)]);
+      if (i + j < L - 1) out.push([P(i + 1, j), P(i + 1, j + 1), P(i, j + 1)]);
+    }
+    return out;
+  };
+  if (pts.length === 3) return tri(pts[0], pts[1], pts[2], level);
+  const c = [0, 0];
+  for (const p of pts) { c[0] += p[0] / pts.length; c[1] += p[1] / pts.length; }
+  const out = [];
+  for (let i = 0; i < pts.length; i++) out.push(...tri(c, pts[i], pts[(i + 1) % pts.length], level - 1));
+  return out;
+}
+function polyCentroid(pts) { const c = [0, 0]; for (const p of pts) { c[0] += p[0] / pts.length; c[1] += p[1] / pts.length; } return c; }
+function shapeGeometry(pts) {   // pts centred on the piece's centroid, counter-clockwise
+  const sh = new THREE.Shape(pts.map(p => new THREE.Vector2(p[0], p[1])));
+  return new THREE.ShapeGeometry(sh);
+}
+// Map the video onto a polygon tile: cover its bounding box at the video's aspect, centred, so the face crops the frame.
+function fitPolyUV(tile, aspect) {
+  if (!tile.poly || !aspect) return;
+  const xs = tile.poly.map(p => p[0]), ys = tile.poly.map(p => p[1]);
+  const bw = Math.max(...xs) - Math.min(...xs), bh = Math.max(...ys) - Math.min(...ys);
+  let vw, vh;
+  if (bw / bh > aspect) { vw = bw; vh = bw / aspect; } else { vh = bh; vw = bh * aspect; }
+  const g = tile.mesh.geometry, pos = g.attributes.position, uv = g.attributes.uv;
+  for (let i = 0; i < pos.count; i++) uv.setXY(i, pos.getX(i) / vw + 0.5, pos.getY(i) / vh + 0.5);
+  uv.needsUpdate = true;
+}
+function refitTile(t) { if (t.poly && t.video && t.video.videoWidth) fitPolyUV(t, t.video.videoWidth / t.video.videoHeight); }
 
 // Interaction tuning
 const SCRUB_MAX_SPEED = 30;     // seconds of video per second at full stick deflection
@@ -84,9 +206,11 @@ function buildSurface(s) {
   const { cols, rows } = grids[s.key];
   const bezel = $('bezel').checked ? 0.03 : 0;
   const g = new THREE.Group();
-  g.position.set(...s.pos); g.rotation.set(...s.rot);
+  g.position.set(...s.pos);
+  if (s.quat) g.quaternion.copy(s.quat); else g.rotation.set(...s.rot);
   roomGroup.add(g);
   surfaceGroups[s.key] = g;
+  if (s.kind === 'face') return buildFaceTiles(s, g, cols, bezel);
   if (s.poly) {   // polygon face: always backed so the corners outside the grid look closed
     const back = new THREE.Mesh(new THREE.CircleGeometry(s.poly.R, s.poly.N, s.poly.start), bezelMat);
     back.position.z = -0.006;
@@ -114,6 +238,36 @@ function buildSurface(s) {
   return made;
 }
 
+// One polyhedron face: dark backing polygon, then level² (or fan × (level-1)²) polygon screens.
+function buildFaceTiles(s, g, level, bezel) {
+  const back = new THREE.Mesh(shapeGeometry(s.pts), bezelMat);
+  back.position.z = -0.006;
+  g.add(back);
+  const made = [];
+  for (const piece of splitPolygon(s.pts, level)) {
+    const c = polyCentroid(piece);
+    let pts = piece.map(p => [p[0] - c[0], p[1] - c[1]]);
+    // ensure counter-clockwise, then inset by the bezel (scale about the centroid)
+    let area = 0; for (let i = 0; i < pts.length; i++) { const a = pts[i], b = pts[(i + 1) % pts.length]; area += a[0] * b[1] - b[0] * a[1]; }
+    if (area < 0) pts.reverse();
+    const inr = Math.sqrt(Math.abs(area) / 2 / Math.PI);       // rough inradius for the inset
+    const k = Math.max(0.5, 1 - bezel / Math.max(inr, 0.05));
+    pts = pts.map(p => [p[0] * k, p[1] * k]);
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    const w = Math.max(...xs) - Math.min(...xs), h = Math.max(...ys) - Math.min(...ys);
+    const m = new THREE.Mesh(shapeGeometry(pts), placeholder);
+    m.position.set(c[0], c[1], 0);
+    g.add(m);
+    const hl = new THREE.Mesh(shapeGeometry(pts.map(p => [p[0] * 1.08, p[1] * 1.08])), highlightMat);
+    hl.position.copy(m.position); hl.position.z = -0.003; hl.visible = false;
+    g.add(hl);
+    const tile = { mesh: m, w, h, video: null, label: '', highlight: hl, surface: s.key, poly: pts };
+    fitPolyUV(tile, 16 / 9);
+    tiles.push(tile); tileOf.set(m, tile); made.push(tile);
+  }
+  return made;
+}
+
 function buildLayout() {
   unfocus(true);
   disposeVideos();
@@ -123,10 +277,12 @@ function buildLayout() {
   roomGroup.clear();
   tiles = []; tileOf.clear();
   shape = $('shape').value; N = Math.max(3, Math.min(48, +$('prismN').value || 6));
-  W = +$('roomW').value || 5; D = shape === 'prism' ? W : (+$('roomD').value || 5); H = +$('roomH').value || 3;
+  W = +$('roomW').value || 5; D = shape === 'box' ? (+$('roomD').value || 5) : W; H = +$('roomH').value || 3;
+  polyCentreY = 0;
+  if (isPoly()) { const ph = polyhedron(shape, W); H = ph.top; polyCentreY = ph.centre.y; $('roomH').value = H.toFixed(1); }
   roomScale = 1; roomGroup.scale.setScalar(1); roomGroup.position.set(0, 0, 0);
   for (const s of surfaces()) {
-    grids[s.key] = {
+    grids[s.key] = s.kind === 'face' ? { cols: Math.max(1, Math.min(4, +$('faceLevel').value || 1)), rows: 1, face: true } : {
       cols: +$(s.kind === 'wall' ? 'wallCols' : 'flatCols').value,
       rows: +$(s.kind === 'wall' ? 'wallRows' : 'flatRows').value,
     };
@@ -137,6 +293,7 @@ function buildLayout() {
 }
 function updateTileCount() {
   const dims = shape === 'prism' ? `${N} walls, ${(W * roomScale).toFixed(1)} m across × ${(H * roomScale).toFixed(1)} m high`
+             : isPoly()          ? `${surfaces().length} faces, ${(W * roomScale).toFixed(1)} m across × ${(H * roomScale).toFixed(1)} m high`
                                  : `${(W * roomScale).toFixed(1)} × ${(D * roomScale).toFixed(1)} × ${(H * roomScale).toFixed(1)} m`;
   $('tileCount').textContent = `${tiles.length} screens · ${dims}`;
 }
@@ -144,7 +301,8 @@ function updateTileCount() {
 // Change the grid of ONE surface; other surfaces keep their videos.
 async function changeGrid(key, dCols, dRows) {
   const g = grids[key]; if (!g) return;
-  const cols = Math.max(1, Math.min(8, g.cols + dCols));
+  if (g.face && dRows) return;
+  const cols = Math.max(1, Math.min(g.face ? 4 : 8, g.cols + dCols));
   const rows = Math.max(1, Math.min(8, g.rows + dRows));
   if (cols === g.cols && rows === g.rows) return;
   g.cols = cols; g.rows = rows;
@@ -224,6 +382,7 @@ function setTileSource(tile, src, label) {
   if (mat !== placeholder && mat.map && !tiles.some(t => t !== tile && t.mesh.material === mat)) { mat.map.dispose(); mat.dispose(); }
   tile.mesh.material = makeMaterial(v);
   if (old && !tiles.some(t => t.video === old)) killVideo(old);
+  if (tile.poly) v.addEventListener('loadedmetadata', () => { if (tile.video === v) refitTile(tile); }, { once: true });
 }
 
 function applySources() {
@@ -447,10 +606,14 @@ async function clearLibrary() {
 }
 $('apply').addEventListener('click', buildLayout);
 function syncShapeFields() {
-  const prism = $('shape').value === 'prism';
+  const v = $('shape').value, prism = v === 'prism', poly = !!POLY_SHAPES[v], box = v === 'box';
   $('prismFields').style.display = prism ? '' : 'none';
-  $('dField').style.display = prism ? 'none' : '';
-  $('wLabel').textContent = prism ? 'Across' : 'W';
+  $('dField').style.display = box ? '' : 'none';
+  $('hField').style.display = poly ? 'none' : '';
+  $('wLabel').textContent = box ? 'W' : 'Across';
+  $('faceRow').style.display = poly ? '' : 'none';
+  $('wallRow').style.display = poly ? 'none' : '';
+  $('flatRow').style.display = poly ? 'none' : '';
 }
 $('shape').addEventListener('change', syncShapeFields);
 syncShapeFields();
@@ -487,6 +650,7 @@ function swapPlaces(a, b) {
   [a.video, b.video] = [b.video, a.video];
   [a.label, b.label] = [b.label, a.label];
   [a.mesh.material, b.mesh.material] = [b.mesh.material, a.mesh.material];
+  refitTile(a); refitTile(b);
 }
 // Put the same video (same decoder, in sync) on another screen
 function copyTo(src, dst) {
@@ -495,6 +659,7 @@ function copyTo(src, dst) {
   unfocus(true);
   const old = dst.video, oldMat = dst.mesh.material;
   dst.video = src.video; dst.label = src.label; dst.mesh.material = src.mesh.material;
+  refitTile(dst);
   if (old && !tiles.some(t => t.video === old)) {
     killVideo(old);
     if (oldMat !== placeholder && oldMat.map) { oldMat.map.dispose(); oldMat.dispose(); }
@@ -604,12 +769,12 @@ function focusTarget() {
 }
 // How far in front of the viewer the focus screen sits: 2.5 m, or 85% of the way to the wall if closer.
 function focusDistance(eye, fwd) {
-  const ox = roomGroup.position.x, oz = roomGroup.position.z;
+  const ox = roomGroup.position.x, oy = roomGroup.position.y + polyCentreY * roomScale, oz = roomGroup.position.z;
   let toWall = Infinity;
   for (const p of wallPlanes()) {
-    const along = fwd.x * p.nx + fwd.z * p.nz;
+    const along = fwd.x * p.nx + fwd.y * p.ny + fwd.z * p.nz;
     if (along <= 1e-4) continue;
-    const d = p.dist * roomScale - ((eye.x - ox) * p.nx + (eye.z - oz) * p.nz);
+    const d = p.dist * roomScale - ((eye.x - ox) * p.nx + (eye.y - oy) * p.ny + (eye.z - oz) * p.nz);
     toWall = Math.min(toWall, d / along);
   }
   return Math.max(0.6, Math.min(2.5, toWall * 0.85));
@@ -703,6 +868,7 @@ function pressStripButton(tile, idx) {
   const t = tile.isFloat ? tile.origin : tile;
   if (t && t.surface) changeGrid(t.surface, b.dc, b.dr);
 }
+const stripButtonsFor = g => g && g.face ? STRIP_BUTTONS.slice(0, 2) : STRIP_BUTTONS;
 const stripCtx = stripCanvas.getContext('2d');
 const stripTex = new THREE.CanvasTexture(stripCanvas);
 stripTex.colorSpace = THREE.SRGBColorSpace;
@@ -731,13 +897,13 @@ function drawStrip(tile) {
   const src = tile.isFloat ? tile.origin : tile;
   const g = src && grids[src.surface];
   c.fillStyle = '#aaa'; c.font = '28px system-ui, sans-serif';
-  c.fillText(g ? `${g.cols}×${g.rows}` : '', R + 14, 60);
-  STRIP_BUTTONS.forEach((b, i) => {
+  c.fillText(g ? (g.face ? `L${g.cols}` : `${g.cols}×${g.rows}`) : '', R + 14, 60);
+  stripButtonsFor(g).forEach((b, i) => {
     c.fillStyle = i === stripHoverBtn ? '#4aa8ff' : '#2a2a2a';
     c.beginPath(); c.roundRect(b.x0, 30, BTN_W, 56, 10); c.fill();
     c.fillStyle = '#fff'; c.font = 'bold 36px system-ui, sans-serif'; c.textAlign = 'center';
     c.fillText(b.label, b.x0 + BTN_W / 2, 58);
-    if (i === 0 || i === 2) { c.fillStyle = '#aaa'; c.font = '18px system-ui, sans-serif'; c.fillText(b.title, b.x0 + BTN_W + BTN_GAP / 2, 20); }
+    if (i === 0 || i === 2) { c.fillStyle = '#aaa'; c.font = '18px system-ui, sans-serif'; c.fillText(g && g.face ? 'split' : b.title, b.x0 + BTN_W + BTN_GAP / 2, 20); }
   });
   c.textAlign = 'left';
   // speaker icon
@@ -907,12 +1073,14 @@ function recentre() {
 function clampRig() {
   const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
   cam.getWorldPosition(_head);
-  const m = 0.25, ox = roomGroup.position.x, oz = roomGroup.position.z;
+  const m = 0.25, ox = roomGroup.position.x, oy = roomGroup.position.y + polyCentreY * roomScale, oz = roomGroup.position.z;
   let cx = _head.x, cz = _head.z;
+  const hy = _head.y;
   for (let pass = 0; pass < 2; pass++) for (const p of wallPlanes()) {   // two passes settle corners
     const lim = p.dist * roomScale - m;
-    const d = (cx - ox) * p.nx + (cz - oz) * p.nz;
-    if (d > lim) { cx -= (d - lim) * p.nx; cz -= (d - lim) * p.nz; }
+    const d = (cx - ox) * p.nx + (hy - oy) * p.ny + (cz - oz) * p.nz;
+    const hz = Math.hypot(p.nx, p.nz);
+    if (d > lim && hz > 0.35) { const t = (d - lim) / hz; cx -= t * p.nx / hz; cz -= t * p.nz / hz; }   // sloped faces push you back horizontally; flat ceilings are handled by maxY
   }
   rig.position.x += cx - _head.x;
   rig.position.z += cz - _head.z;

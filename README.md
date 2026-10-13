@@ -28,6 +28,7 @@ presence and whether an `immersive-vr` session is supported.
 | Room | **Shape**: Box (W × D × H); **Prism** with N walls (3–48), sized by the width across flats and H; or a **polyhedron** (tetrahedron, octahedron, dodecahedron, icosahedron, 80-face geodesic sphere, or an N-trapezohedron with 2N kite faces, N = 3–16, odd N for a flat ceiling) standing on one face, sized by the width across (twice the floor face's inradius; height follows). A prism's walls get the normal wall grid, its N-gon floor and ceiling carry the largest square grid that fits. A polyhedron's faces are each one screen showing the video centre-cropped to the face shape; "Split each face" (level 1–4) cuts triangles into L² screens and pentagons into a fan of 5 × (L−1)². **Max crop** caps how much of the video's width or height may be cut off (0 = never crop, 100 = always cover the face); **Fill the rest with** blank (the screen is clipped to the video, the dark face shows around it) mirrored video (kaleidoscope-style repeats, with a subtle dark line on every seam where a reflection starts), or **nested copies**: smaller in-sync copies of the same video fitted into the leftover areas, each cropped a bit more per nesting level (depth 1–4, +N % per level); leftovers too small (copy narrower than 12 cm or 20 % of the main video) or too slim (bounding box more than 4:1) get the chosen fallback, mirrored or blank. Both apply live. Rectangular screens use the same fit, so videos are cropped rather than stretched. "Focus screen fills N° of view" sets the floating screen size. "Dim others" darkens the wall while a screen is focused. **Turning**: smooth (speed follows stick deflection) or snap (15° per stick flick), for both turning and tilting. |
 | Screens per surface | Starting grid (cols × rows) for walls and for floor/ceiling. Optional bezels. **Apply layout** rebuilds everything and resets per-wall grids and room scale. |
 | Videos | **Add folder…** adds a folder to the library (File System Access API); each folder row has a **subfolders** checkbox (on by default) and an × to remove it. **Add files…** adds one or more individual videos as a row. Rows persist across launches in IndexedDB; after a restart a row says "click to reopen" until you click it to re-grant read access. **Shuffle** redeals from the combined pool; **Clear** removes every row. "Use sample video" shows the sample until the next shuffle or layout change. Also: "Start each video at a random point", "Auto-jump every N s", "Separate decoder per screen" (stress test for non-library mode), "Mute all". |
+| Likes & dealing | ♥ on a screen's panel likes its video; the list persists (file handles in IndexedDB, matched to the library by folder name + path, so it survives restarts and re-scans). **Deal**: all videos / liked first, then the rest / liked only (repeats) — used by Apply layout, Shuffle, adding folders and startup, and remembered. **Export likes** saves the list as JSON; **Clear likes** empties it. |
 | Stats | render fps, decoder count, audible count, dropped video frames %, stalled/paused. |
 
 ## Controls
@@ -37,7 +38,8 @@ for the played part, clockwise from the top-left corner), a sound icon floats in
 top-right corner (green = audible, grey with a red cross = muted, pause bars when paused), and
 a small button panel sits in its bottom-right corner: grid or split level with − / + buttons for
 that surface, then zoom − / + and reset (↺) for that one screen (the current zoom is shown, with a
-* when the screen has its own adjustment).
+* when the screen has its own adjustment), then ♥ to like / unlike the video on it. Liked screens
+show a small heart on their floating icon.
 Icon and panel keep a constant apparent size whatever the distance; the panel shrinks only when
 the tile cannot hold it, and slides inward on triangles and kites. Screens that are audible show
 the sound icon even when not pointed at.
@@ -53,6 +55,10 @@ the sound icon even when not pointed at.
 | B / Y | focus: lift the screen off the wall into a big floating panel; again to send it back |
 | Stick click | jump to a random point in the timeline |
 | Panel buttons | − / + columns and rows for **that wall only** (other walls keep playing); on a polyhedron face − / + change its split level. Zoom − / + (×1.25 per press) and ↺ reset apply to **that screen only** |
+
+**Station board**: a small table that follows you at waist height, just below the straight-ahead
+view (look down to see it; faint until you look at it or point at it). Drag its ♥ "deploy" slot onto
+any screen to put a random liked video there.
 
 **Drag (press on one screen, release on another)**
 
@@ -108,6 +114,12 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   mirror = the whole face mapped to the main rectangle (texture wraps mirrored); nested = main region plus
   `nestFill()` recursing through `leftoverPieces()` (≤ 4 convex pieces per rectangle). `updateSeams()` draws
   seam lines for every mirrored region.
+- **Likes**: `likes[]` of `{ handle, rootName, rel, name }` persisted under the `likes` key; `likedKeys` is
+  the set of library keys currently liked (rebuilt by `rebuildLikedKeys()` on library or like changes).
+  `makeDealer(exclude)` yields entries per the Deal setting; `deployLiked(tile)` picks a random available
+  liked video. The station board (`board` group, `updateBoard()` each frame) is a world-space group
+  repositioned from the head pose with a lazily following yaw; its `deploySlot` mesh is a raycast target
+  in VR and starts a drag of kind `'liked'` whose release on a tile calls `deployLiked`.
 - **Per-screen view**: `tile.view = { zoom, dx, dy }` (null = follow the crop setting). `zoom` is relative to the
   inscribed video size (1 = whole video visible, `fit.coverRatio` = face covered, max 2× that); `dx/dy` are
   offsets in video widths/heights. `adjustDrag()` edits it live during an in-screen drag; `resetView()` clears it.
@@ -176,5 +188,6 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
 - Spatial audio (Web Audio panner so sound comes from the screen's wall).
 - Preload the next swap candidate to hide the ~200 ms black frame.
 - Save/restore layouts (grids, room size, which video where).
+- Playlists beyond the single like list: named lists, ordering, liked videos as individual board slots, import.
 - Per-screen cropping of a mosaic video (many clips in one decoder).
 - Native build (Unity/Godot OpenXR) if WebXR limits are hit.

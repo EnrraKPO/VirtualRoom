@@ -1038,25 +1038,45 @@ setInterval(() => {
 // ---- Grid/split buttons: a small panel of fixed physical size, tucked into the hovered tile's bottom-right corner.
 const PANEL_DEG = 5.5, PANEL_MARGIN = 0.02;   // panel height as an angle at the eye (buttons ≈ 3°), margin in metres
 const panelCanvas = document.createElement('canvas');
-panelCanvas.width = 640; panelCanvas.height = 160;
+panelCanvas.width = 1100; panelCanvas.height = 160;
 const BTN_W = 96, BTN_GAP = 10;
-const PANEL_BUTTONS = [
+// Button groups: grid (cols/rows, or split level on a polyhedron face), then zoom −/+ and reset for this screen.
+const GRID_BUTTONS = [
   { label: '−', title: 'cols', dc: -1, dr: 0 }, { label: '+', title: 'cols', dc: 1, dr: 0 },
   { label: '−', title: 'rows', dc: 0, dr: -1 }, { label: '+', title: 'rows', dc: 0, dr: 1 },
-].map((b, i) => ({ ...b, x0: 124 + i * (BTN_W + BTN_GAP) + (i >= 2 ? 26 : 0) }));
-for (const b of PANEL_BUTTONS) b.x1 = b.x0 + BTN_W;
+];
+const ZOOM_BUTTONS = [{ label: '−', title: 'zoom', dz: -1 }, { label: '+', title: 'zoom', dz: 1 }, { label: '↺', title: 'reset', reset: true }];
+let panelBtns = [];          // current layout: buttons with x0/x1 (canvas px)
 let panelHoverBtn = -1;
-const panelButtonsFor = g => g && g.face ? PANEL_BUTTONS.slice(0, 2) : PANEL_BUTTONS;
+function panelLayout(g) {
+  const out = [];
+  let x = 124;
+  const grid = g && g.face ? GRID_BUTTONS.slice(0, 2) : GRID_BUTTONS;
+  grid.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP; });
+  x += 150;                                   // room for the zoom value
+  ZOOM_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; out.push({ ...b, x0: x, x1: x + BTN_W, zoomX: x }); x += BTN_W + BTN_GAP; });
+  return out;
+}
 function panelButtonAt(uv) {
   if (!uv) return -1;
   const x = uv.x * panelCanvas.width, y = (1 - uv.y) * panelCanvas.height;
   if (y < 30 || y > 150) return -1;
-  return PANEL_BUTTONS.findIndex(b => x >= b.x0 - 5 && x <= b.x1 + 5);
+  return panelBtns.findIndex(b => x >= b.x0 - 5 && x <= b.x1 + 5);
 }
+const ZOOM_STEP = 1.25;
 function pressPanelButton(tile, idx) {
-  const b = PANEL_BUTTONS[idx]; if (!b) return;
+  const b = panelBtns[idx]; if (!b) return;
   const t = tile.isFloat ? tile.origin : tile;
-  if (t && t.surface) changeGrid(t.surface, b.dc, b.dr);
+  if (!t) return;
+  if (b.reset) { resetView(t); drawPanel(tile); return; }
+  if (b.dz) {
+    if (!t.fit) return;
+    const z0 = t.view && t.view.zoom != null ? t.view.zoom : t.fit.zoomDefault;
+    const zoom = Math.max(1, Math.min(2 * t.fit.coverRatio, z0 * Math.pow(ZOOM_STEP, b.dz)));
+    t.view = { zoom, dx: t.view ? t.view.dx : 0, dy: t.view ? t.view.dy : 0 };
+    refitTile(t); drawPanel(tile); return;
+  }
+  if (t.surface) changeGrid(t.surface, b.dc, b.dr);
 }
 const panelCtx = panelCanvas.getContext('2d');
 const panelTex = new THREE.CanvasTexture(panelCanvas);
@@ -1068,19 +1088,30 @@ function drawPanel(tile) {
   const c = panelCtx, Wc = panelCanvas.width, Hc = panelCanvas.height;
   const src = tile.isFloat ? tile.origin : tile;
   const g = src && grids[src.surface];
-  const btns = panelButtonsFor(g);
-  const wide = btns[btns.length - 1].x1 + 20;
+  panelBtns = panelLayout(g);
+  const wide = panelBtns[panelBtns.length - 1].x1 + 20;
   c.clearRect(0, 0, Wc, Hc);
   c.fillStyle = 'rgba(0,0,0,0.7)';
   c.beginPath(); c.roundRect(0, 0, wide, Hc, 24); c.fill();
-  c.fillStyle = '#ddd'; c.font = 'bold 40px system-ui, sans-serif'; c.textBaseline = 'middle'; c.textAlign = 'center';
+  c.textBaseline = 'middle'; c.textAlign = 'center';
+  c.fillStyle = '#ddd'; c.font = 'bold 40px system-ui, sans-serif';
   c.fillText(g ? (g.face ? `L${g.cols}` : `${g.cols}×${g.rows}`) : '', 62, 90);
-  btns.forEach((b, i) => {
+  // zoom value for this screen (relative to "whole video visible"); custom values are marked
+  const fit = src && src.fit, zoom = fit ? (src.view && src.view.zoom != null ? src.view.zoom : fit.zoomDefault) : 0;
+  const zb = panelBtns.find(b => b.dz);
+  c.fillText(fit ? `${zoom.toFixed(2)}×${src.view ? '*' : ''}` : '', zb.x0 - 80, 90);
+  let labelled = new Set();
+  panelBtns.forEach((b, i) => {
     c.fillStyle = i === panelHoverBtn ? '#4aa8ff' : '#2e2e2e';
     c.beginPath(); c.roundRect(b.x0, 44, BTN_W, 88, 14); c.fill();
     c.fillStyle = '#fff'; c.font = 'bold 56px system-ui, sans-serif';
     c.fillText(b.label, b.x0 + BTN_W / 2, 88);
-    if (i === 0 || i === 2) { c.fillStyle = '#aaa'; c.font = '26px system-ui, sans-serif'; c.fillText(g && g.face ? 'split' : b.title, b.x0 + BTN_W + BTN_GAP / 2, 22); }
+    const title = b.dc !== undefined && g && g.face ? 'split' : b.title;
+    if (!labelled.has(title)) {
+      labelled.add(title);
+      c.fillStyle = '#aaa'; c.font = '26px system-ui, sans-serif';
+      c.fillText(title, b.reset ? b.x0 + BTN_W / 2 : b.x0 + BTN_W + BTN_GAP / 2, 22);
+    }
   });
   panelTex.needsUpdate = true;
   return wide / Wc;   // fraction of the canvas in use, so the mesh can be trimmed to it

@@ -35,7 +35,9 @@ presence and whether an `immersive-vr` session is supported.
 Point a Sense controller at a screen: its contour lights up as the progress bar (bright blue
 for the played part, clockwise from the top-left corner), a sound icon floats in front of its
 top-right corner (green = audible, grey with a red cross = muted, pause bars when paused), and
-a small button panel sits in its bottom-right corner (grid or split level with − / + buttons).
+a small button panel sits in its bottom-right corner: grid or split level with − / + buttons for
+that surface, then zoom − / + and reset (↺) for that one screen (the current zoom is shown, with a
+* when the screen has its own adjustment).
 Icon and panel keep a constant apparent size whatever the distance; the panel shrinks only when
 the tile cannot hold it, and slides inward on triangles and kites. Screens that are audible show
 the sound icon even when not pointed at.
@@ -50,7 +52,7 @@ the sound icon even when not pointed at.
 | A / X | pause / play |
 | B / Y | focus: lift the screen off the wall into a big floating panel; again to send it back |
 | Stick click | jump to a random point in the timeline |
-| Panel buttons | − / + columns and rows for **that wall only** (other walls keep playing); on a polyhedron face − / + change its split level |
+| Panel buttons | − / + columns and rows for **that wall only** (other walls keep playing); on a polyhedron face − / + change its split level. Zoom − / + (×1.25 per press) and ↺ reset apply to **that screen only** |
 
 **Drag (press on one screen, release on another)**
 

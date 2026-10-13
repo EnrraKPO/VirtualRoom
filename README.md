@@ -177,8 +177,9 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   `icon` mesh. `updateHud()` runs every frame: progress on the focused tile, icons on focused or
   audible tiles, sized by distance to the eye (`ICON_DEG`). `panelMesh` (buttons) is a single
   `CanvasTexture` mesh re-parented to the focused tile's surface group, sized by distance
-  (`PANEL_DEG`), placed with `fitBand()` in the lowest band of the outline that holds it. Only the
-  panel is in the raycast list; `panelButtonAt(uv)` maps hits to buttons.
+  (`PANEL_DEG`), placed with `fitBand()` in the lowest band of the outline that holds it. `pickHit()`
+  raycasts in layers matching the draw order (board slot, panel, focus screen, then the room), so the panel
+  and the focus screen win even when a wall is nearer; `panelButtonAt(uv)` maps panel hits to buttons.
 - **Gamepad mapping** (WebXR standard): 0 trigger, 1 grip, 3 stick click, 4 A/X, 5 B/Y,
   axes 2/3 thumbstick.
 

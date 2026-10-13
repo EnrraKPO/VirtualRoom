@@ -1597,7 +1597,7 @@ function updateHand(hand, dt, now) {
   tmpM.identity().extractRotation(hand.ctrl.matrixWorld);
   raycaster.ray.origin.setFromMatrixPosition(hand.ctrl.matrixWorld);
   raycaster.ray.direction.set(0, 0, -1).applyMatrix4(tmpM);
-  const hit = raycaster.intersectObjects(rayTargets(), false)[0];
+  const hit = pickHit();
   const onPanel = hit && hit.object === panelMesh, onSlot = hit && hit.object === deploySlot;
   const tile = hit ? (onPanel ? focusTile : onSlot ? null : tileFor(hit.object)) : null;
   if (hit) { hand.dot.position.copy(hit.point); hand.dot.visible = true; hand.beam.scale.z = hit.distance; }
@@ -1831,13 +1831,18 @@ function endDrag(hand, target, now) {
     if (kind === 'swap') swapTile(from); else toggleAudio(from, now - t0 >= LONG_GRIP_MS);
   }
 }
-function rayTargets() {
-  const t = tiles.map(x => x.mesh);
-  for (const x of tiles) if (x.hit) t.push(x.hit);
-  if (focused && !anim) t.push(floatMesh);
-  if (panelMesh.visible) t.unshift(panelMesh);   // button panel sits in front of its tile; test it first
-  if (renderer.xr.isPresenting) t.unshift(deploySlot);   // station board slot (VR only)
-  return t;
+// Pick in layers that match the draw order, not by distance: the station board slot and the button panel first,
+// then the focus screen (it draws over the room even when it sits beyond a wall), then the room's screens.
+function pickHit() {
+  const layers = [];
+  if (renderer.xr.isPresenting) layers.push([deploySlot]);
+  if (panelMesh.visible) layers.push([panelMesh]);
+  if (focused && !anim) layers.push([floatMesh]);
+  const room = tiles.map(x => x.mesh);
+  for (const x of tiles) if (x.hit) room.push(x.hit);
+  layers.push(room);
+  for (const l of layers) { const hit = raycaster.intersectObjects(l, false)[0]; if (hit) return hit; }
+  return undefined;
 }
 function tileFor(obj) { return obj === floatMesh ? floatTile : tileOf.get(obj); }
 
@@ -1901,7 +1906,7 @@ function updateDesktopWalk(dt) {
 function updateMouse() {
   if (renderer.xr.isPresenting) { mouseTile = null; return; }
   raycaster.setFromCamera(mouse, camera);
-  const hit = raycaster.intersectObjects(rayTargets(), false)[0];
+  const hit = pickHit();
   const onPanel = hit && hit.object === panelMesh;
   const tile = hit ? (onPanel ? focusTile : tileFor(hit.object)) : null;
   if (tile !== mouseTile) { mouseTile = tile; setFocus(tile); }

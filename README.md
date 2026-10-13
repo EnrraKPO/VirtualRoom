@@ -54,12 +54,13 @@ the sound icon even when not pointed at.
 | A / X | pause / play |
 | B / Y | focus: lift the screen off the wall into a big floating panel; again to send it back |
 | Stick click | jump to a random point in the timeline |
-| Panel buttons | Left to right: ✕ **dismiss** (hold the trigger on it for 0.7 s; the button fills red), ↶ ↷ **history** (every screen remembers the last 16 videos it showed; ↶ goes back, ↷ forward; a new video after going back discards the forward part; dismissed videos are skipped; greyed when there is nothing that way). Then layout of **this piece**: − removes it (its siblings re-flow evenly; a group left with one piece dissolves into its parent; greyed on a surface's only piece), + adds a sibling to its group (dealt a new video), ⊞ splits it into two (its video stays in the first half). The label shows the group size and, when nested, the depth. Other surfaces and other groups keep playing. Then zoom, and at the far right ♥ likes and 📌 pins the screen's video, kept away from ✕. The panel is 5° of view tall. Zoom − / + (×1.25 per press) and ↺ reset apply to **that screen only**. On the focus screen the same buttons scale the floating screen itself (0.1–60 m wide, the width is shown) and ↺ puts it back to its default pose |
+| Panel buttons | Left to right: ✕ **dismiss** (hold the trigger on it for 0.7 s; the button fills red), ⊙ **override** (hold 0.7 s: this screen's video takes over every screen, pinned ones included, in sync on one decoder; the other screens' videos pause and are remembered, and "lift" on the station board puts every untouched screen back exactly where it was; screens you change by hand meanwhile keep their new video; layout, shuffle, swap, dismiss, history and deploy are blocked until lifted), ↶ ↷ **history** (every screen remembers the last 16 videos it showed; ↶ goes back, ↷ forward; a new video after going back discards the forward part; dismissed videos are skipped; greyed when there is nothing that way). Then layout of **this piece**: − removes it (its siblings re-flow evenly; a group left with one piece dissolves into its parent; greyed on a surface's only piece), + adds a sibling to its group (dealt a new video), ⊞ splits it into two (its video stays in the first half). The label shows the group size and, when nested, the depth. Other surfaces and other groups keep playing. Then zoom, and at the far right ♥ likes and 📌 pins the screen's video, kept away from ✕. The panel is 5° of view tall. Zoom − / + (×1.25 per press) and ↺ reset apply to **that screen only**. On the focus screen the same buttons scale the floating screen itself (0.1–60 m wide, the width is shown) and ↺ puts it back to its default pose |
 
 **Station board**: a small table that follows you at waist height, just below the straight-ahead
 view (look down to see it; faint until you look at it or point at it). Drag its ♥ "deploy" slot onto
 any screen to put a random liked video there. Tap its "shuffle" slot (trigger press and release on it)
-to redeal every screen except the pinned ones.
+to redeal every screen except the pinned ones. Its "lift" slot (lit only while an override is up) lifts
+the override. On desktop the slots work with the mouse: click shuffle or lift, drag deploy ♥ onto a screen.
 
 **Drag (press on one screen, release on another)**
 
@@ -139,7 +140,12 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   History: `tile.hist = { list, i }` of library keys, pushed by `setTileSource` (unless `nav`), `swapPlaces`,
   `copyTo`, inherited through `restructure`; `histStep(tile, ±1)` moves to the next available entry. Hold
   buttons (`hold: true`): the hand / mouse keeps `hold = { idx, t0 }`, `setPanelHold()` redraws the fill, and
-  `pressPanelButton` fires at `HOLD_MS`.
+  `pressPanelButton` fires at `HOLD_MS`. Override: `startOverride(tile)` snapshots every other tile
+  `{ video, mat, label, view, wasPlaying }` into `override.saved`, puts the source material on all of them via
+  `enterWith`, pausing each saved video once its pop has covered it; `liftOverride()` restores tiles that still
+  show the override material (resuming paused videos), retires the rest, and `overrideBlocks()` guards the
+  structural / dealing actions. Board slots carry `userData.slot`; `tapSlot(kind)` serves both the VR trigger
+  tap and desktop clicks (`mouseSlot`, `mouseSlotDrag` for deploy ♥ with the mouse).
 - **Transitions**: `setTileSource()` / `swapPlaces()` / `copyTo()` never put the new material on the mesh
   directly; they call `enterWith(tile, video, mat, finish, enter)`, which waits for the video to have a frame
   (`loadeddata`) and then runs the entrance: `popIn` (overlay mesh with the new fit, scaled 0 → 1 over the

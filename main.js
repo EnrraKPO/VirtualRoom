@@ -645,6 +645,7 @@ function updateTileCount() {
 // view), a split piece's video goes to its first child, new pieces are dealt, and everything sweeps in about
 // the container's centre.
 async function layoutAction(tile, act) {
+  if (overrideBlocks()) return;
   const t = tile.isFloat ? tile.origin : tile; if (!t || !t.node) return;
   const node = t.node, p = node.parent;
   let changed;
@@ -813,6 +814,7 @@ function killVideo(v) {
 }
 function disposeVideos() {
   unfocus(true);
+  override = null;   // a full reset drops the override and its saved state (everything is disposed anyway)
   dropAllTransitions();
   for (const v of videoEls) { v.pause(); v.removeAttribute('src'); v.load(); }
   videoEls = [];
@@ -941,6 +943,7 @@ async function toggleLike(tile) {
 }
 // Put a random liked video (preferably one not already on a screen) on this tile
 async function deployLiked(tile) {
+  if (overrideBlocks()) return;
   const t = tile.isFloat ? tile.origin : tile; if (!t) return;
   const liked = likedEntries();
   if (!liked.length) { setStatus('No liked videos available.'); return; }
@@ -1024,6 +1027,7 @@ function renderDismissed() {
 }
 // Dismiss the video on this screen: list it, unpin it, and swap every screen showing it to something else.
 async function dismissTile(tile) {
+  if (overrideBlocks()) return;
   const t = tile.isFloat ? tile.origin : tile; if (!t) return;
   const e = library.find(x => x.key === t.label);
   if (!e) { setStatus('Only library videos can be dismissed.'); return; }
@@ -1037,6 +1041,48 @@ async function dismissTile(tile) {
 }
 $('showDismissed').addEventListener('click', () => { const l = $('dismissedList'); l.style.display = l.style.display === 'none' ? '' : 'none'; });
 $('clearDismissed').addEventListener('click', async () => { dismissed = []; rebuildDismissedKeys(); await persistDismissed(); });
+// ---- Override: the held screen's video takes over every screen (pinned ones too). The screens' own videos are
+// paused and remembered; lifting the override (station board) puts them back exactly where they were. Screens
+// changed by hand while the override is up keep what they show. Layout, dealing and history are blocked meanwhile.
+let override = null;   // { video, mat, label, saved: Map(tile -> { video, mat, label, view, wasPlaying }) }
+const overrideBlocks = () => { if (override) setStatus('Lift the override first (station board).'); return !!override; };
+function startOverride(tile) {
+  const t = tile.isFloat ? tile.origin : tile; if (!t || !t.video || override) return;
+  unfocus(true);
+  const { video, label } = t, mat = t.mesh.material, saved = new Map();
+  override = { video, mat, label, saved };
+  for (const x of tiles) {
+    if (x === t) continue;
+    cancelTransition(x);
+    const sv = { video: x.video, mat: x.mesh.material, label: x.label, view: x.view, wasPlaying: false };
+    saved.set(x, sv);
+    x.video = video; x.label = label; x.view = null;
+    enterWith(x, video, mat, () => {
+      x.mesh.material = mat; refitTile(x);
+      if (sv.video && sv.video !== video && !tiles.some(y => y.video === sv.video)) { sv.wasPlaying = !sv.video.paused; sv.video.pause(); }
+    });
+  }
+  setStatus(`Override: ${tileName(label)} on every screen.`);
+}
+function liftOverride() {
+  if (!override) return;
+  const o = override; override = null;
+  unfocus(true);
+  const gone = [];
+  for (const [x, sv] of o.saved) {
+    if (tiles.includes(x)) cancelTransition(x);
+    const live = tiles.includes(x) && x.video === o.video && x.mesh.material === o.mat;
+    if (!live) { gone.push(sv); continue; }
+    x.video = sv.video; x.label = sv.label; x.view = sv.view;
+    if (sv.video) {
+      if (sv.wasPlaying && sv.video.paused) sv.video.play().catch(() => {});
+      enterWith(x, sv.video, sv.mat, () => { x.mesh.material = sv.mat; refitTile(x); });
+    } else { x.mesh.material = sv.mat; refitTile(x); }
+  }
+  for (const sv of gone) retire(sv.video, sv.mat);
+  retire(o.video, o.mat);
+  setStatus('Override lifted.');
+}
 // ---- Per-screen history: every video a screen has shown (library keys), with ↶ / ↷ moving through it.
 const HIST_MAX = 16;
 function pushHist(tile, key) {
@@ -1054,6 +1100,7 @@ function histTarget(tile, dir) {   // index of the next usable entry in that dir
   return -1;
 }
 async function histStep(tile, dir) {
+  if (overrideBlocks()) return;
   const t = tile.isFloat ? tile.origin : tile; if (!t) return;
   const i = histTarget(t, dir); if (i < 0) return;
   const e = library.find(x => x.key === t.hist.list[i]); if (!e) return;
@@ -1136,7 +1183,7 @@ function clearTile(t) {
   retire(v, m);
 }
 async function dealRandom() {
-  if (!library.length) return;
+  if (!library.length || overrideBlocks()) return;
   const keep = new Set(tiles.filter(t => isPinnedKey(t.label)));
   if (!keep.size) disposeVideos(); else { unfocus(true); for (const t of tiles) if (!keep.has(t)) clearTile(t); }
   const next = makeDealer(new Set([...keep].map(t => t.label)));
@@ -1146,6 +1193,7 @@ async function dealRandom() {
 // Swap one tile to a random library video not currently on any screen (if possible)
 async function swapTile(tile) {
   if (!library.length) { setStatus('Swap needs a folder library.'); return; }
+  if (overrideBlocks()) return;
   const inUse = new Set(tiles.map(t => t.label)), src = dealable().length ? dealable() : library;
   let pool = src.filter(e => e.key !== tile.label && !inUse.has(e.key));
   if (!pool.length) pool = src.filter(e => e.key !== tile.label);
@@ -1494,7 +1542,7 @@ setInterval(() => {
 // ---- Grid/split buttons: a small panel of fixed physical size, tucked into the hovered tile's bottom-right corner.
 const PANEL_DEG = 5, PANEL_MARGIN = 0.02;   // panel height as an angle at the eye (buttons ≈ 3°), margin in metres
 const panelCanvas = document.createElement('canvas');
-panelCanvas.width = 1700; panelCanvas.height = 160;
+panelCanvas.width = 1840; panelCanvas.height = 160;
 const BTN_W = 96, BTN_GAP = 10;
 // Button groups: grid (cols/rows, or split level on a polyhedron face), then zoom −/+ and reset for this screen.
 // Layout: − removes this piece (its siblings re-flow), + adds a sibling, ⊞ splits this piece into two.
@@ -1505,6 +1553,7 @@ const ZOOM_BUTTONS = [{ label: '−', title: 'zoom', dz: -1 }, { label: '+', tit
 const LIKE_BUTTON = { label: '♥', title: 'like', like: true };
 const PIN_BUTTON = { label: '📌', title: 'pin', pin: true };
 const DISMISS_BUTTON = { label: '✕', title: 'dismiss (hold)', dismiss: true, hold: true, solo: true };
+const OVERRIDE_BUTTON = { label: '⊙', title: 'override (hold)', override: true, hold: true, solo: true };
 const HIST_BUTTONS = [{ label: '↶', title: 'history', hist: -1 }, { label: '↷', title: 'history', hist: 1 }];
 const HOLD_MS = 700;         // hold the trigger (or mouse button) this long on a hold button
 let panelHold = null;        // { idx, frac } while a hold button is being held
@@ -1515,6 +1564,7 @@ function panelLayout() {
   let x = 124;
   const put = b => { out.push({ ...b, x0: x, x1: x + BTN_W }); x += BTN_W + BTN_GAP; };
   put(DISMISS_BUTTON); x += 26;                // destructive and history buttons far from ♥ / 📌
+  put(OVERRIDE_BUTTON); x += 26;
   HIST_BUTTONS.forEach(put); x += 26;
   LAYOUT_BUTTONS.forEach((b, i) => { if (i === 2) x += 26; put(b); });
   x += 150;                                   // room for the zoom value
@@ -1553,6 +1603,7 @@ function pressPanelButton(tile, idx) {
   if (b.like) { toggleLike(t).then(() => drawPanel(tile)); return; }
   if (b.pin) { togglePin(t).then(() => drawPanel(tile)); return; }
   if (b.dismiss) { dismissTile(tile); return; }
+  if (b.override) { startOverride(tile); drawPanel(tile); return; }
   if (b.hist) { histStep(tile, b.hist); return; }
   if (b.dz) {
     if (!t.fit) return;
@@ -1597,7 +1648,8 @@ function drawPanel(tile) {
       c.fillStyle = '#d04040'; c.fillRect(b.x0, 44, BTN_W * Math.min(1, panelHold.frac), 88); c.restore();
     }
     const off = (b.act === 'remove' && (!(node && node.parent) || pinned))   // the only piece of a surface, or a pinned one, cannot be removed
-             || (b.hist && (!src || histTarget(src, b.hist) < 0));
+             || (b.hist && (!src || histTarget(src, b.hist) < 0))
+             || (b.override && (!!override || !src || !src.video));
     c.fillStyle = b.like ? (liked ? '#ff4a6a' : '#777') : off ? '#666' : '#fff'; c.font = 'bold 56px system-ui, sans-serif';
     c.globalAlpha = b.pin && !pinned ? 0.35 : 1;
     c.fillText(b.label, b.x0 + BTN_W / 2, 88);
@@ -1699,7 +1751,18 @@ const shuffleSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTes
 const shuffleSlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), shuffleSlotMat);
 shuffleSlot.position.set(-BOARD_W / 2 + 0.24, 0, 0.002); shuffleSlot.renderOrder = 26; shuffleSlot.userData.slot = 'shuffle';
 board.add(shuffleSlot);
-const boardSlots = [deploySlot, shuffleSlot];
+const liftSlotMat = new THREE.MeshBasicMaterial({ transparent: true, depthTest: false, depthWrite: false, map: slotTexture(c => {
+  c.strokeStyle = '#ffd24a'; c.lineWidth = 14; c.lineCap = 'round';   // ring with a lifted bar
+  c.beginPath(); c.arc(128, 110, 50, 0, Math.PI * 2); c.stroke();
+  c.beginPath(); c.moveTo(70, 40); c.lineTo(186, 40); c.stroke();
+  c.fillStyle = '#fff'; c.font = 'bold 30px system-ui, sans-serif'; c.textAlign = 'center'; c.textBaseline = 'middle';
+  c.fillText('lift', 128, 225);
+}) });
+const liftSlot = new THREE.Mesh(new THREE.PlaneGeometry(0.12, 0.12), liftSlotMat);
+liftSlot.position.set(-BOARD_W / 2 + 0.39, 0, 0.002); liftSlot.renderOrder = 26; liftSlot.userData.slot = 'lift';
+board.add(liftSlot);
+const boardSlots = [deploySlot, shuffleSlot, liftSlot];
+function tapSlot(kind) { if (kind === 'shuffle') dealRandom(); else if (kind === 'lift') liftOverride(); }
 const BOARD_SLOT = { isBoard: true, label: '' };   // drag source sentinel for the deploy slot
 const _bf = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bm = new THREE.Matrix4();
 let boardYaw = null, boardHot = false;
@@ -1724,6 +1787,7 @@ function updateBoard(dt) {
   const target = gazing || boardHot ? 1 : 0.3;
   boardMat.opacity += (target - boardMat.opacity) * Math.min(1, dt * 8);
   deploySlotMat.opacity = shuffleSlotMat.opacity = boardMat.opacity;
+  liftSlotMat.opacity = boardMat.opacity * (override ? 1 : 0.35);   // only lit while an override is up
 }
 
 // Per-frame HUD: contour progress on the hovered screen, floating sound icons on hovered or audible screens.
@@ -1883,8 +1947,8 @@ function updateHand(hand, dt, now) {
   // different screen = two-screen action (trigger drag = swap places, grip drag = copy).
   if (trigger && !p.trigger && tile) startDrag(hand, 'swap', tile, now, lx, ly, hit);
   if (trigger && !p.trigger && slot === 'liked') startDrag(hand, 'liked', BOARD_SLOT, now);
-  if (trigger && !p.trigger && slot === 'shuffle') hand.tapShuffle = true;         // tap (press + release on the slot) = shuffle, pinned screens stay
-  if (!trigger && p.trigger && hand.tapShuffle) { hand.tapShuffle = false; if (slot === 'shuffle') dealRandom(); }
+  if (trigger && !p.trigger && (slot === 'shuffle' || slot === 'lift')) hand.tapSlot = slot;   // tap (press + release on the same slot)
+  if (!trigger && p.trigger && hand.tapSlot) { const k = hand.tapSlot; hand.tapSlot = null; if (slot === k) tapSlot(k); }
   if (grip && !p.grip && tile) startDrag(hand, 'copy', tile, now, lx, ly, hit);
   if (!trigger && p.trigger && hand.drag && (hand.drag.kind === 'swap' || hand.drag.kind === 'liked')) endDrag(hand, tile, now);
   if (!grip && p.grip && hand.drag && hand.drag.kind === 'copy') endDrag(hand, tile, now);
@@ -2050,7 +2114,7 @@ function endDrag(hand, target, now) {
 // then the focus screen (it draws over the room even when it sits beyond a wall), then the room's screens.
 function pickHit() {
   const layers = [];
-  if (renderer.xr.isPresenting) layers.push(boardSlots);
+  layers.push(boardSlots);   // the station board slots: trigger in VR, mouse on desktop
   if (panelMesh.visible) layers.push([panelMesh]);
   if (focused && !anim) layers.push([floatMesh]);
   const room = tiles.map(x => x.mesh);
@@ -2066,15 +2130,19 @@ let yaw = 0, pitch = 0, dragging = false, downX = 0, downY = 0, moved = false;
 const mouse = new THREE.Vector2(2, 2);
 let mouseTile = null;
 let mouseHold = null;   // { idx, t0 } while the mouse button is held on a hold button
+let mouseSlot = null, mouseSlotDrag = false;   // station board slot under the mouse; dragging from the deploy slot
 renderer.domElement.addEventListener('pointerdown', e => {
   dragging = true; moved = false; downX = e.clientX; downY = e.clientY;
   if (e.button === 0 && mouseTile && panelHoverBtn >= 0 && panelBtns[panelHoverBtn].hold) mouseHold = { idx: panelHoverBtn, t0: performance.now() };
+  if (e.button === 0 && mouseSlot === 'liked') mouseSlotDrag = true;
 });
 addEventListener('pointerup', e => {
   dragging = false;
   const held = mouseHold; mouseHold = null;
   if (held) { if (!held.fired) setPanelHold(null); return; }   // released early, or it already fired: no click
+  if (mouseSlotDrag) { mouseSlotDrag = false; if (mouseTile) deployLiked(mouseTile); return; }   // deploy ♥ dragged onto a screen
   if (e.target !== renderer.domElement || renderer.xr.isPresenting) return;
+  if (e.button === 0 && mouseSlot && !moved) { tapSlot(mouseSlot); return; }
   if (moved) return;
   if (e.button === 0 && mouseTile && panelHoverBtn >= 0) { pressPanelButton(mouseTile, panelHoverBtn); return; }
   if (e.button === 0 && mouseTile && !tilePinned(mouseTile)) swapTile(mouseTile);
@@ -2129,7 +2197,8 @@ function updateMouse() {
   raycaster.setFromCamera(mouse, camera);
   const hit = pickHit();
   const onPanel = hit && hit.object === panelMesh;
-  const tile = hit ? (onPanel ? focusTile : tileFor(hit.object)) : null;
+  mouseSlot = hit ? hit.object.userData.slot || null : null;
+  const tile = hit ? (onPanel ? focusTile : mouseSlot ? null : tileFor(hit.object)) : null;
   if (tile !== mouseTile) { mouseTile = tile; setFocus(tile); }
   const btn = onPanel ? panelButtonAt(hit.uv) : -1;
   if (btn !== panelHoverBtn) { panelHoverBtn = btn; if (focusTile) drawPanel(focusTile); }
@@ -2186,6 +2255,6 @@ renderer.setAnimationLoop(() => {
   else { updateMouse(); updateDesktopWalk(dt); }
   updateHud();
   updateBoard(dt);
-  boardHot = hands.some(h => h.onSlot || (h.drag && h.drag.kind === 'liked'));
+  boardHot = hands.some(h => h.onSlot || (h.drag && h.drag.kind === 'liked')) || !!mouseSlot || mouseSlotDrag;
   renderer.render(scene, camera);
 });

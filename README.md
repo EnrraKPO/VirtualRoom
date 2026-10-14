@@ -208,6 +208,11 @@ F = focus, R = random jump, X,X = swap places, C,C = copy, + / − = room size.
   (`toRoomLocal`/`fromRoomLocal`, `roomPlanes()` = walls + floor + ceiling): while level it pushes
   horizontally and applies the floor/ceiling rule vertically; while tilted every plane pushes along
   its normal and the standing-height rule is off. `recentre()` levels the room.
+  **Head pose**: always read it from `camera` (the rig's child), never from `renderer.xr.getCamera()`.
+  That XR camera has no parent, so `getWorldPosition()` on it rebuilds its world matrix from the raw
+  headset pose and silently drops the rig's walk and turn; every head-relative thing (turn pivot,
+  clamping, board, focus screen, menu) then goes wrong as soon as the rig is no longer at the origin.
+  The frame loop calls `renderer.xr.updateCamera(camera)` first so `camera` holds this frame's pose.
 - **Room scale**: `roomGroup.scale` + `roomGroup.position`, scaled about the head so the
   floor stays at y=0 and walls recede evenly. `commitRoomScale()` bakes the live scale into
   the W/D/H fields on stick release.

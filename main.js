@@ -1413,7 +1413,7 @@ function scaleRoom(f) {
   roomScale = Math.max(1.5 / base, Math.min(40 / base, roomScale * f));
   // Scale about the viewer's head (horizontally; the floor stays at y = 0):
   // keep the head's position in room-local space unchanged by shifting the room.
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_head);
   const level = roomLevel();
   roomScale = s0; toRoomLocal(_head, _lv); roomScale = Math.max(1.5 / base, Math.min(40 / base, s0 * f));
@@ -1498,7 +1498,7 @@ const _toTile = new THREE.Vector3();
 function focusTarget() {
   // Along the line from the eye to the screen being focused, so the panel opens where you were looking
   // (works for floor, ceiling and sloped faces too). Uses the live XR head pose when presenting.
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_eye);
   focused.mesh.getWorldPosition(_toTile);
   _fwd.subVectors(_toTile, _eye);
@@ -1598,7 +1598,7 @@ function updateFocusAnim(now) {
 setInterval(() => {
   if (!focused || anim) return;
   const v = focused.video; if (!v || !v.videoWidth) return;
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_eye);
   const aspect = v.videoWidth / v.videoHeight;
   if (floatTile.custom) { const fh = floatGroup.scale.x / aspect; if (Math.abs(floatGroup.scale.y - fh) > 0.01) floatGroup.scale.y = fh; return; }
@@ -1761,7 +1761,7 @@ function fitBand(pts, bh, minW, yMin, fromTop = false) {
 function placePanel(tile) {
   const used = drawPanel(tile);
   const aspect = (panelCanvas.width * used) / panelCanvas.height;
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_eye); tile.mesh.getWorldPosition(_iw);
   const panelH = 2 * _eye.distanceTo(_iw) * Math.tan(THREE.MathUtils.degToRad(PANEL_DEG / 2));   // metres, constant apparent size
   if (tile.isFloat) {   // unit space inside floatGroup (scaled to the screen size)
@@ -1860,7 +1860,7 @@ const BOARD_SLOT = { isBoard: true, label: '' };   // drag source sentinel for t
 const _bf = new THREE.Vector3(), _bq = new THREE.Quaternion(), _bm = new THREE.Matrix4();
 let boardYaw = null, boardHot = false;
 function updateBoard(dt) {
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_eye);
   cam.getWorldDirection(_bf);
   const yaw = Math.atan2(_bf.x, _bf.z);
@@ -2049,14 +2049,14 @@ function menuSliderEnd(h) { $(h.w.id).dispatchEvent(new Event('change', { bubble
 function setMenuHold(idx, frac) { menuHold = idx == null ? null : { idx, frac }; drawMenu(); }
 const _mo = new THREE.Vector3();
 function menuMoveTo(ray, m) {   // keep the grabbed point of the bar under the beam, facing the eye
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_eye);
   _mo.copy(ray.direction).multiplyScalar(m.dist).add(ray.origin);
   menuMesh.position.copy(_mo).sub(m.off.clone().applyQuaternion(menuMesh.quaternion));
   menuMesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().lookAt(_eye, menuMesh.position, new THREE.Vector3(0, 1, 0)));
 }
 function openMenu() {
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_eye); cam.getWorldDirection(_mo); _mo.y = 0; if (_mo.lengthSq() < 1e-6) _mo.set(0, 0, -1); _mo.normalize();
   menuMesh.position.copy(_eye).addScaledVector(_mo, MENU_AHEAD); menuMesh.position.y -= 0.1;
   menuMesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().lookAt(_eye, menuMesh.position, new THREE.Vector3(0, 1, 0)));
@@ -2102,7 +2102,7 @@ let mouseMenu = null, mouseOnMenu = false, mouseMenuHit = null;
 // Per-frame HUD: contour progress on the hovered screen, floating sound icons on hovered or audible screens.
 const _iw = new THREE.Vector3();
 function updateHud() {
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_eye);
   if (focusTile) {
     const v = focusTile.video, dur = v && isFinite(v.duration) ? v.duration : 0;
@@ -2295,7 +2295,7 @@ function updateHand(hand, dt, now) {
 const WALK_SPEED = 2.0;  // m/s at full deflection, scaled with the room
 const _head = new THREE.Vector3(), _hf = new THREE.Vector3(), _hr = new THREE.Vector3();
 function moveRig(ax, ay, dt, up = 0) {
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldDirection(_hf); _hf.y = 0;
   if (_hf.lengthSq() < 1e-4) _hf.set(0, 0, -1); else _hf.normalize();
   _hr.set(-_hf.z, 0, _hf.x);                       // right = forward rotated 90° clockwise
@@ -2309,7 +2309,7 @@ function moveRig(ax, ay, dt, up = 0) {
 const TURN_SPEED = THREE.MathUtils.degToRad(120);   // rad/s at full deflection
 const _rot = new THREE.Quaternion(), _yAxis = new THREE.Vector3(0, 1, 0);
 function turnRig(angle) {
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_head);
   _rot.setFromAxisAngle(_yAxis, angle);
   rig.position.sub(_head).applyQuaternion(_rot).add(_head);
@@ -2318,7 +2318,7 @@ function turnRig(angle) {
 const SNAP_ANGLE = THREE.MathUtils.degToRad(15);
 // Tilt the room about the viewer's head, around the head's left-right axis (stick forward = wall ahead rolls up over you).
 function pitchRoom(angle) {
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_head);
   cam.getWorldDirection(_hf); _hf.y = 0;
   if (_hf.lengthSq() < 1e-4) _hf.set(0, 0, -1); else _hf.normalize();
@@ -2330,7 +2330,7 @@ function pitchRoom(angle) {
 }
 // Put the viewer's head at the room's centre and level the room again
 function recentre() {
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_head);
   roomGroup.quaternion.identity(); roomGroup.position.y = 0;
   rig.position.x += roomGroup.position.x - _head.x;
@@ -2338,7 +2338,7 @@ function recentre() {
   rig.position.y = 0;
 }
 function clampRig() {
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_head);
   const m = 0.25 / roomScale, level = roomLevel();
   // Work in unscaled room-local space. Level room: walls only, pushed horizontally (sloped faces must not lift you),
@@ -2388,7 +2388,7 @@ function adjustFloat(hand, tile, lx, ly, hit) {
   const dx = (lx - d.x0) * d.s0.x, dy = (ly - d.y0) * d.s0.y;
   if (!d.adjusted && Math.hypot(dx, dy) < 0.05 * Math.min(d.s0.x, d.s0.y)) return;
   d.adjusted = true; floatTile.custom = true;
-  const cam = renderer.xr.isPresenting ? renderer.xr.getCamera() : camera;
+  const cam = camera;   // the rig's camera: its world matrix includes the rig's position and turn (see the frame loop)
   cam.getWorldPosition(_eye);
   if (d.kind === 'swap') {
     // where the grabbed point should be now, then back off by the grab offset (in the float's own frame)
@@ -2599,6 +2599,10 @@ const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1), now = performance.now();
   frames++;
+  // Head pose for this frame. renderer.xr.getCamera() must NOT be used for world queries: it has no parent, so
+  // getWorldPosition() rebuilds its matrixWorld from the raw (rig-local) pose and ignores the rig's walk and turn.
+  // updateCamera() writes the pose into the rig's own camera, whose world matrix is right.
+  if (renderer.xr.isPresenting) renderer.xr.updateCamera(camera);
   updateFocusAnim(now);
   updateTransitions(now);
   if (renderer.xr.isPresenting) for (const h of hands) updateHand(h, dt, now);
